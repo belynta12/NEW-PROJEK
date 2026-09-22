@@ -86,9 +86,15 @@ Penghematan yang sudah aktif di proyek ini:
 | Pilihan | Biaya | Kualitas gerak |
 | --- | --- | --- |
 | `puppet` (bawaan proyek) | 0 | Mesh 478 titik wajah: rahang, bibir per viseme, kelopak, alis, pipi, kepala 3D semu, napas. Deteksi wajah MediaPipe gratis di browser |
-| D-ID Talks | mulai ~$6 / bulan, per video | Lipsync rapi, ada jeda render beberapa detik |
-| HeyGen Interactive Avatar | ~$29+ / bulan | Paling mirip manusia, streaming real-time |
-| Simli | ada tier gratis developer | Streaming lipsync, lebih murah dari HeyGen |
+| Simli (`simli`) | gratis 50 menit/bulan, Hobby $10 = 1.000 menit (~$0,01/menit) | Wajah + kepala/bahu dari satu foto, lipsync rapi, latensi rendah |
+| bitHuman | gratis 99 kredit/bulan, Creator $20 = 1.800 kredit (~$0,02-0,04/menit) | Tubuh atas + idle penuh dari foto/video, bisa render di perangkat |
+| LemonSlice | Starter $8 = 41 menit (~$0,16-0,19/menit; enterprise s/d $0,039) | Ekspresi + gestur tubuh dari satu foto, BYO LLM/suara |
+| Anam | gratis 30 menit, Starter $12 = 50 menit + $0,16/menit | Sangat natural, tubuh atas, dari satu foto |
+| HeyGen LiveAvatar | Starter $19 = 150 kredit (~$0,10-0,13/menit); avatar kustom butuh paket $99 | Paling lengkap dari video 2 menit (gestur), 1080p |
+| D-ID (`did`) | Build $18 = ~32 menit, Launch $50 = ~90 menit (~$0,50-0,56/menit) | Wajah + kepala dari satu foto, tanpa badan; streaming WebRTC (Agents Streams) |
+| Tavus | Starter $59 = 100-175 menit + $0,32-0,37/menit | Paling realistis, perlu video 2 menit |
+
+Tabel lengkap beserta rekomendasi ada di README bagian 5. Harga sering berubah, cek halaman resmi.
 
 ---
 

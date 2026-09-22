@@ -74,7 +74,7 @@ export async function synthesize(text) {
 	const cacheFile = cacheDir ? path.join(cacheDir, `${key}.mp3`) : ""
 
 	if (tts.cache && cacheFile && fs.existsSync(cacheFile)) {
-		return { buffer: fs.readFileSync(cacheFile), contentType: "audio/mpeg", cached: true }
+		return { buffer: fs.readFileSync(cacheFile), contentType: "audio/mpeg", cached: true, key }
 	}
 
 	let buffer
@@ -91,7 +91,14 @@ export async function synthesize(text) {
 			/* abaikan */
 		}
 	}
-	return { buffer, contentType: "audio/mpeg", cached: false }
+	return { buffer, contentType: "audio/mpeg", cached: false, key }
+}
+
+/** Path file cache untuk key sha1 (dipakai rute /tts-cache/ bagi D-ID). */
+export function cacheFileFor(key) {
+	if (!cacheDir || !/^[a-f0-9]{40}$/.test(String(key || ""))) return null
+	const file = path.join(cacheDir, `${key}.mp3`)
+	return fs.existsSync(file) ? file : null
 }
 
 async function elevenLabs(text, cfg) {

@@ -148,6 +148,13 @@ function build() {
 			did: {
 				apiKey: str(process.env.DID_API_KEY),
 				sourceUrl: str(process.env.DID_SOURCE_URL),
+				// agents = API terbaru (fluent idle, latensi lebih rendah) | talks = legacy
+				mode: str(process.env.DID_MODE, "agents").toLowerCase() === "talks" ? "talks" : "agents",
+				fluent: bool(process.env.DID_FLUENT, true),
+				resolution: num(process.env.DID_RESOLUTION, 512),
+				// URL publik server ini (https). Bila diisi, D-ID membaca audio TTS langsung dari
+				// server (tanpa unggah ke D-ID dulu) -> mulai bicara lebih cepat.
+				publicBaseUrl: str(process.env.PUBLIC_BASE_URL),
 			},
 		},
 		vision: {
@@ -216,6 +223,13 @@ export function publicConfig() {
 		},
 		heygenReady: Boolean(c.avatar.heygen.apiKey),
 		didReady: Boolean(c.avatar.did.apiKey),
+		did: {
+			ready: Boolean(c.avatar.did.apiKey),
+			mode: c.avatar.did.mode,
+			fluent: c.avatar.did.fluent,
+			publicAudio: Boolean(c.avatar.did.publicBaseUrl),
+			hasSourceUrl: Boolean(c.avatar.did.sourceUrl),
+		},
 		simliReady: Boolean(c.avatar.simli.apiKey),
 	}
 }

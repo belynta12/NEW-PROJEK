@@ -180,7 +180,7 @@ function renderStatus() {
 		["Otak (LLM)", config.llm.label + " " + mark(config.llm.online !== false)],
 		["Dengar (STT)", config.stt.label + " " + mark(config.stt.ready)],
 		["Suara (TTS)", config.tts.label + " " + mark(config.tts.ready)],
-		["Avatar", config.avatarMode + (puppet.legacy ? " (2D, tanpa WebGL)" : " (mesh 3D)")],
+		["Avatar", avatarStatusLabel()],
 		["Wajah", faceMark],
 	]
 	el.statusList.innerHTML = rows.map((row) => "<li><b>" + row[0] + "</b><span>" + row[1] + "</span></li>").join("")
@@ -209,6 +209,10 @@ async function applyPhoto(src, options) {
 		}
 	}
 	await setupFace(src, { fresh })
+	if (config.avatarMode === "did" && didModule && !(options && options.skipDid)) {
+		// foto berganti -> sesi D-ID dibuat ulang dengan foto baru
+		didModule.restartDid({ photoUrl: src }).catch((error) => addMessage("err", "D-ID: " + error.message))
+	}
 }
 
 /** Siapkan rig wajah: landmark bawaan -> cache -> kalibrasi manual tersimpan -> deteksi otomatis. */
@@ -480,7 +484,7 @@ async function fetchTtsBlob(text) {
 		const detail = await response.json().catch(() => ({}))
 		throw new Error(detail.error || "TTS gagal (" + response.status + ")")
 	}
-	return await response.blob()
+	return { blob: await response.blob(), key: response.headers.get("x-tts-key") || "" }
 }
 
 const browserSpeak = (text) => speakWithBrowser(text, { lang: sttLang(), onMouth: (m) => puppet.setMouth(m) })
@@ -498,7 +502,15 @@ function createSpeechQueue(myTurn) {
 		// unduh audio + siapkan lipsync lebih awal (sambil kalimat sebelumnya masih diputar)
 		const prefetch = useServerTts
 			? fetchTtsBlob(text)
-					.then((blob) => (isDid ? { blob, text } : speaker.prepare({ blob, text })))
+					.then(async ({ blob, key }) => {
+						const item = await speaker.prepare({ blob, text })
+						item.key = key
+						if (isDid && !(config.did && config.did.publicAudio && key)) {
+							// unggah ke D-ID lebih awal supaya saat giliran bicara cukup satu panggilan
+							item.didAudioUrl = await didModule.prepareDidAudio(blob).catch(() => null)
+						}
+						return item
+					})
 					.catch((error) => error)
 			: null
 
@@ -518,14 +530,21 @@ function createSpeechQueue(myTurn) {
 						])
 					} else if (isDid) {
 						try {
-							await didModule.speakDid(item.blob)
+							const state = didModule.getDidState()
+							if (state.fluent && state.connected) showDidVideo(true)
+							const result = await didModule.speakDid(item.blob, {
+								text,
+								duration: item.duration,
+								ttsKey: item.key,
+								audioUrl: item.didAudioUrl,
+							})
+							if (result && result.latencyMs) console.log("[did] mulai bicara setelah", result.latencyMs, "ms")
+							renderStatus()
 						} catch (didErr) {
 							console.warn("[did] gagal bicara, fallback ke audio:", didErr.message)
-							addMessage("err", "D-ID (" + didErr.message + ") -> Memutar suara langsung...")
-							el.video.hidden = true
-							el.canvas.hidden = false
-							puppet.start()
-							await speaker.enqueue(await speaker.prepare({ blob: item.blob, text }))
+							addMessage("err", "D-ID (" + didErr.message + ") -> memutar suara lewat avatar foto.")
+							showDidVideo(false)
+							await speaker.enqueue(item)
 						}
 					} else {
 						await speaker.enqueue(item)
@@ -566,9 +585,16 @@ async function ask(userText) {
 
 	const flush = (final) => {
 		if (config.avatarMode === "did" && didModule) {
-			if (final && full.trim() && spokenUpTo === 0) {
+			// D-ID: kalimat pertama segera dikirim (respons cepat), sisanya digabung jadi satu talk
+			// supaya tidak ada jeda antar kalimat (setiap talk punya overhead ~1-2 detik).
+			const sentences = extractSentences(full, final)
+			if (spokenUpTo === 0 && sentences.length >= 1) {
+				queue.push(sentences[0])
 				spokenUpTo = 1
-				queue.push(full.trim())
+			}
+			if (final && sentences.length > spokenUpTo) {
+				queue.push(sentences.slice(spokenUpTo).join(" "))
+				spokenUpTo = sentences.length
 			}
 			return
 		}
@@ -772,6 +798,7 @@ el.stopBtn.addEventListener("click", () => {
 	speaker.stop()
 	stopBrowserTts()
 	stopListening()
+	if (didModule) didModule.muteDid(true)
 	showCaption("")
 	busy = false
 	setState("idle")
@@ -863,6 +890,67 @@ window.addEventListener("keyup", (event) => {
 	if (event.code === "Space" && !handsFree) stopListening()
 })
 
+/* -------------------------------- D-ID -------------------------------- */
+/** Tampilkan video D-ID (true) atau avatar foto lokal (false). */
+function showDidVideo(show) {
+	if (show) {
+		el.stageEmpty.hidden = true
+		el.video.hidden = false
+		el.canvas.hidden = true
+	} else {
+		el.video.hidden = true
+		el.canvas.hidden = false
+		puppet.start()
+	}
+	renderStatus()
+}
+
+function connectDid() {
+	if (!didModule) return Promise.resolve(false)
+	return didModule
+		.startDid({
+			videoEl: el.video,
+			photoUrl: currentPhotoSrc,
+			onTrack: (_stream, state) => {
+				// fluent: video D-ID selalu tampil (gerak diam alami dari D-ID).
+				// tidak fluent: video hanya saat bicara, sisanya avatar foto lokal yang bernapas & berkedip.
+				if (state.fluent) showDidVideo(true)
+				addMessage("sys", "Avatar video D-ID aktif (" + state.mode + (state.fluent ? ", fluent" : ", video saat bicara") + ").")
+				renderStatus()
+			},
+			onTalkState: (talking, state) => {
+				if (state.fluent) return
+				showDidVideo(talking)
+			},
+			onStatus: (message) => {
+				console.log("[D-ID]", message)
+				renderStatus()
+			},
+			onError: (err) => {
+				console.warn("D-ID streaming issue:", err)
+				showDidVideo(false)
+			},
+		})
+		.catch((error) => {
+			console.warn("D-ID info:", error.message)
+			addMessage("err", "D-ID: " + error.message + " Sementara memakai avatar foto.")
+			showDidVideo(false)
+			return false
+		})
+}
+
+function avatarStatusLabel() {
+	if (config.avatarMode === "did") {
+		const s = didModule ? didModule.getDidState() : null
+		if (!s || !s.connected) return "D-ID belum tersambung (cadangan: avatar foto)"
+		return (
+			"D-ID " + (s.mode || "") + (s.fluent ? " fluent" : "") +
+			(s.lastLatencyMs ? " · mulai bicara " + (s.lastLatencyMs / 1000).toFixed(1) + " s" : "")
+		)
+	}
+	return config.avatarMode + (puppet.legacy ? " (2D, tanpa WebGL)" : " (mesh 3D)")
+}
+
 /* -------------------------------- mulai ------------------------------- */
 async function init() {
 	setState("idle")
@@ -917,30 +1005,7 @@ async function init() {
 	} else if (config.avatarMode === "did" && serverOnline) {
 		try {
 			didModule = await import("./did.js")
-			didModule
-				.startDid({
-					videoEl: el.video,
-					onTrack: () => {
-						el.stageEmpty.hidden = true
-						el.canvas.hidden = true
-						el.video.hidden = false
-						puppet.stop()
-						addMessage("sys", "Avatar video real-time D-ID aktif!")
-					},
-					onError: (err) => {
-						console.warn("D-ID streaming issue:", err)
-						el.video.hidden = true
-						el.canvas.hidden = false
-						puppet.start()
-					},
-				})
-				.catch((error) => {
-					console.warn("D-ID info:", error.message)
-					didModule = null
-					el.canvas.hidden = false
-					el.video.hidden = true
-					puppet.start()
-				})
+			connectDid()
 		} catch (error) {
 			console.error("D-ID import error:", error)
 		}

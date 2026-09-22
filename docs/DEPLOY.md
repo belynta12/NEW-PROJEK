@@ -68,6 +68,9 @@ sudo certbot --nginx -d avatar.domainanda.com
 > `proxy_buffering off` wajib, kalau tidak jawaban streaming akan tertahan dan
 > avatar terasa lambat menjawab.
 
+> Mode D-ID: setelah domain https aktif, isi `PUBLIC_BASE_URL=https://avatar.domainanda.com`
+> di `.env` supaya D-ID membaca audio TTS langsung dari server (mulai bicara lebih cepat).
+
 ## Menempelkan ke website yang sudah ada
 
 ```html

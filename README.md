@@ -134,9 +134,50 @@ Kalau ingin video AI generatif penuh (rambut/kain ikut bergerak), ada mode berba
 | Mode | Isi `.env` | Catatan |
 | --- | --- | --- |
 | `puppet` (default) | - | Gratis, real-time, jalan di semua browser modern (WebGL) |
-| `simli` | `AVATAR_MODE=simli`, `SIMLI_API_KEY`, `SIMLI_FACE_ID` | Streaming WebRTC real-time, ada tier gratis developer |
-| `did` | `AVATAR_MODE=did`, `DID_API_KEY`, `DID_SOURCE_URL` | Streaming WebRTC dari SATU foto; foto harus punya URL publik |
+| `simli` | `AVATAR_MODE=simli`, `SIMLI_API_KEY`, `SIMLI_FACE_ID` | Streaming WebRTC real-time, wajah dari satu foto, termurah (~$0,01/menit), ada tier gratis |
+| `did` | `AVATAR_MODE=did`, `DID_API_KEY` | Streaming WebRTC dari satu foto lewat *Agents Streams* (fluent idle) dengan cadangan API lama; foto lokal diunggah otomatis, `DID_SOURCE_URL` opsional |
 | `heygen` | - | Belum tersedia di versi web ini (butuh SDK HeyGen); server sudah menyediakan endpoint token |
+
+### Mode D-ID: cara kerja & optimasi
+
+- Server membuat **Agent** D-ID dari foto yang sedang dipasang (`POST /images` -> `POST /agents`,
+  id disimpan di `cache/did/`), lalu membuka stream WebRTC dengan `fluent` (gerak diam alami)
+  dan `stream_warmup`. Bila akun tidak mendukung `fluent`/agents, otomatis turun ke stream
+  biasa lalu ke API lama (`talks/streams`, resolusi `DID_RESOLUTION`).
+- Audio Fish Audio/ElevenLabs diunggah ke D-ID **saat prefetch** (paralel dengan kalimat yang
+  sedang diputar) sehingga saat giliran bicara hanya perlu satu panggilan. Bila server punya URL
+  https publik (`PUBLIC_BASE_URL`), D-ID membaca audio langsung dari `/tts-cache/` tanpa unggah.
+- Jawaban dipecah: **kalimat pertama** dikirim segera (respons cepat), sisanya digabung jadi
+  satu *talk* supaya tidak ada jeda antar kalimat.
+- Sinkronisasi memakai event data channel (`stream/ready`, `stream/started`, `stream/done`);
+  tanpa fluent, video D-ID hanya ditampilkan saat bicara dan avatar foto lokal (bernapas,
+  berkedip) mengisi saat diam, jadi tidak ada frame beku/hitam.
+- Gagal apa pun (kuota habis, WebRTC putus) -> otomatis kembali ke avatar foto + suara lokal
+  tanpa memutus percakapan. Latensi "mulai bicara" ditampilkan di Pengaturan > Status mesin.
+- Biaya (harga API D-ID, Sept 2026): Build $18/bln = 64 kredit (~32 menit streaming, lisensi
+  personal), Launch $50/bln = 180 kredit (~90 menit), Scale $198/bln = 800 kredit (~400 menit).
+  Streaming dihitung ~2 kredit/menit bicara, jadi efektif **~$0,50-0,56 per menit** - jauh lebih
+  mahal daripada Simli/bitHuman/LemonSlice (lihat tabel di bawah). Idle tidak dihitung.
+
+### Perbandingan layanan avatar real-time (harga publik, Sept 2026)
+
+| Layanan | Harga masuk | Efektif per menit | Dari foto sendiri? | Gerak badan | Catatan |
+| --- | --- | --- | --- | --- | --- |
+| **Simli** | Gratis 50 mnt/bln (+$10 kredit); Hobby $10 = 1.000 mnt | ~$0,01 | Ya (1 foto) | Kepala & bahu saja | Sudah terintegrasi (`simli`). Lipsync bagus, latensi <300 ms |
+| **bitHuman** | Gratis 99 kredit/bln; Creator $20 = 1.800 kredit | ~$0,02-0,04 (2-4 kredit/mnt) | Ya (foto atau video) | Ya (tubuh atas, idle penuh) | Bisa render di perangkat/browser (setengah harga). SDK berbasis LiveKit |
+| **LemonSlice** | Starter $8 = 41 mnt; Scale $240 = 1.463 mnt | ~$0,16-0,19 (enterprise s/d $0,039) | Ya (1 foto, avatar tak terbatas) | Ya (ekspresi + gestur tubuh) | API di semua paket, BYO LLM/suara, panggilan 30 menit |
+| **Anam** | Gratis 30 mnt (watermark); Starter $12 = 50 mnt | $0,11-0,16 | Ya (1 foto) | Tubuh atas, sangat natural | Starter dibatasi 5 menit/percakapan |
+| **HeyGen LiveAvatar** | Gratis 10 kredit; Starter $19 = 150 kredit; avatar kustom butuh $99 | ~$0,10-0,13 (Lite, audio sendiri) | Ya (1 foto atau video 2 menit) | Ya (dari video: gestur penuh) | 1080p, concurrency tak terbatas; SDK belum dibundel di repo ini |
+| **Akool** | Pro Max $41/bln = 1.200 kredit | ~$0,17-0,25 (6-7 kredit/mnt) | Perlu video untuk avatar streaming | Ya (tubuh penuh) | Berbasis Agora RTC |
+| **Tavus** | Gratis 25 mnt; Starter $59 = 100-175 mnt | $0,32-0,37 | Perlu video 2 menit | Wajah + tubuh atas, paling realistis | Paling mahal setelah D-ID |
+| **D-ID** | Build $18 = ~32 mnt; Launch $50 = ~90 mnt | ~$0,50-0,56 | Ya (1 foto) | Wajah + kepala sedikit, tanpa badan | Terintegrasi (`did`); API `talks/streams` sudah legacy |
+
+Rekomendasi kalau ingin murah dan "lengkap" (badan + wajah + mulut) dari satu foto:
+**LemonSlice** (gestur tubuh terbaik dari satu foto, $8/bln, API di semua paket) atau
+**bitHuman** (paling murah dengan gerak badan, ada tier gratis). Kalau cukup wajah + kepala:
+**Simli** (~$0,01/menit, sudah bisa dipakai di repo ini). Kalau sanggup merekam video 2 menit
+dan mau bayar lebih: HeyGen LiveAvatar atau Tavus. Harga penyedia sering berubah - cek halaman
+resminya sebelum memutuskan.
 
 Perbandingan harga lengkap: `docs/BIAYA-API.md`.
 

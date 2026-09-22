@@ -164,11 +164,13 @@ async function handleStt(req, res, url) {
 
 async function handleTts(req, res) {
 	const body = await readJson(req)
-	const { buffer, contentType, cached } = await tts.synthesize(body.text)
+	const { buffer, contentType, cached, key } = await tts.synthesize(body.text)
 	res.writeHead(200, {
 		"content-type": contentType,
 		"content-length": buffer.length,
 		"x-tts-cache": cached ? "hit" : "miss",
+		"x-tts-key": key || "",
+		"access-control-expose-headers": "x-tts-key, x-tts-cache",
 		"cache-control": "no-store",
 	})
 	res.end(buffer)
@@ -251,8 +253,16 @@ const ROUTES = [
 		"/api/knowledge/reload",
 		async (req, res) => sendJson(res, 200, reloadKnowledge(KNOWLEDGE_DIR)),
 	],
-	// D-ID Streaming WebRTC
-	["POST", "/api/avatar/did/stream", async (req, res) => sendJson(res, 200, await avatarVideo.didCreateStream())],
+	// D-ID Streaming WebRTC (Agents Streams + cadangan Talks Streams)
+	[
+		"POST",
+		"/api/avatar/did/stream",
+		async (req, res) => {
+			const body = await readJson(req)
+			sendJson(res, 200, await avatarVideo.didCreateStream({ photoUrl: body.photoUrl }))
+		},
+	],
+	["GET", "/api/avatar/did/info", async (req, res) => sendJson(res, 200, avatarVideo.didPublicInfo())],
 	[
 		"POST",
 		"/api/avatar/did/stream/sdp",
@@ -334,6 +344,13 @@ const server = http.createServer(async (req, res) => {
 	if (pathname.startsWith("/api/")) return sendJson(res, 404, { error: "Endpoint tidak ada" })
 
 	// File statis
+	if (pathname.startsWith("/tts-cache/")) {
+		// audio TTS untuk D-ID (hanya bila PUBLIC_BASE_URL diisi); nama file = sha1
+		const key = pathname.slice(11).replace(/\.mp3$/, "")
+		const file = config.avatar.did.publicBaseUrl ? tts.cacheFileFor(key) : null
+		if (!file) return sendJson(res, 404, { error: "Audio tidak ditemukan" })
+		return serveStatic(res, file)
+	}
 	if (pathname.startsWith("/uploads/")) {
 		const target = path.join(UPLOAD_DIR, path.normalize(pathname.slice(9)).replace(/^(\.\.[/\\])+/, ""))
 		if (!target.startsWith(UPLOAD_DIR)) return sendJson(res, 403, { error: "Akses ditolak" })
