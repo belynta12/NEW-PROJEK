@@ -1,0 +1,8 @@
+.env
+node_modules/
+cache/
+uploads/
+*.log
+.DS_Store
+pipecat/.venv/
+pipecat/.env

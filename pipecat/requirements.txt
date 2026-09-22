@@ -1,0 +1,8 @@
+# Versi dipin supaya API tidak berubah di tengah jalan.
+# Cek rilis terbaru di https://github.com/pipecat-ai/pipecat
+pipecat-ai[silero,groq,openai,elevenlabs,deepgram,webrtc]==0.0.67
+python-dotenv==1.0.1
+loguru==0.7.2
+
+# Aktifkan bila memakai avatar video realtime:
+# simli-ai==0.1.7

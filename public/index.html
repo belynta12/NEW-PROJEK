@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="id">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<title>Avatar AI Lifetime</title>
+		<meta name="description" content="Avatar AI yang bicara dengan suara dan wajah Anda sendiri." />
+		<link rel="icon" href="assets/favicon.svg" />
+		<link rel="stylesheet" href="styles.css?v=2026" />
+	</head>
+	<body>
+		<header class="topbar">
+			<div class="brand">
+				<span class="brand-dot" aria-hidden="true"></span>
+				<span class="brand-name" id="personaName">Avatar AI Lifetime</span>
+			</div>
+			<div class="topbar-actions">
+				<span class="pill" id="statusPill">Menyiapkan…</span>
+				<button class="icon-btn" id="settingsBtn" type="button" aria-label="Pengaturan">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.11A1.7 1.7 0 0 0 8.9 19.3a1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.7 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.11A1.7 1.7 0 0 0 4.7 8.9a1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.11A1.7 1.7 0 0 0 15.1 4.7a1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9v.03a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.11A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+				</button>
+			</div>
+		</header>
+
+		<main class="layout">
+			<section class="stage-wrap">
+				<div class="stage" id="stage">
+					<canvas id="avatarCanvas" width="720" height="900" aria-label="Avatar"></canvas>
+					<video id="avatarVideo" playsinline autoplay hidden></video>
+					<div class="stage-empty" id="stageEmpty">
+						<p class="stage-empty-title">Unggah foto Anda</p>
+						<p class="stage-empty-sub">Foto setengah badan, wajah menghadap kamera.</p>
+						<button class="btn btn-primary" id="emptyUploadBtn" type="button">Pilih foto</button>
+					</div>
+					<div class="stage-badge" id="stateBadge"><span class="dot"></span><span id="stateText">Siap</span></div>
+					<div class="caption" id="caption" aria-live="polite"></div>
+				</div>
+
+				<div class="controls">
+					<button class="mic" id="micBtn" type="button" aria-label="Tekan dan tahan untuk bicara">
+						<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5V6a3.5 3.5 0 1 0-7 0v5.5A3.5 3.5 0 0 0 12 15Z"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>
+						<span id="micLabel">Tahan untuk bicara</span>
+					</button>
+					<label class="switch">
+						<input type="checkbox" id="handsFree" />
+						<span>Mode ngobrol otomatis</span>
+					</label>
+					<button class="btn btn-ghost" id="stopBtn" type="button">Hentikan suara</button>
+				</div>
+			</section>
+
+			<section class="panel">
+				<div class="panel-head">
+					<h2>Percakapan</h2>
+					<button class="btn btn-ghost btn-sm" id="clearBtn" type="button">Bersihkan</button>
+				</div>
+				<div class="chat" id="chat"></div>
+				<form class="composer" id="composer">
+					<input id="textInput" type="text" placeholder="Atau tulis pertanyaan di sini…" autocomplete="off" />
+					<button class="btn btn-primary btn-sm" type="submit">Kirim</button>
+				</form>
+			</section>
+		</main>
+
+		<!-- ============================ PENGATURAN ============================ -->
+		<aside class="drawer" id="drawer" hidden>
+			<div class="drawer-head">
+				<h2>Pengaturan</h2>
+				<button class="icon-btn" id="closeDrawer" type="button" aria-label="Tutup">
+					<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+				</button>
+			</div>
+
+			<div class="drawer-body">
+				<div class="group">
+					<h3>1. Foto avatar</h3>
+					<p class="hint">Terbaik: foto setengah badan, latar rapi, mulut tertutup, wajah lurus ke kamera.</p>
+					<input type="file" id="photoInput" accept="image/*" hidden />
+					<div class="row">
+						<button class="btn" id="pickPhoto" type="button">Unggah foto</button>
+						<button class="btn btn-ghost" id="useSample" type="button">Pakai contoh</button>
+					</div>
+				</div>
+
+				<div class="group">
+					<h3>2. Kalibrasi wajah</h3>
+					<p class="hint" id="calibHint">Tandai mulut dan kedua mata supaya animasi pas.</p>
+					<div class="row">
+						<button class="btn" id="calibrateBtn" type="button">Mulai kalibrasi</button>
+						<button class="btn btn-ghost" id="resetRig" type="button">Reset</button>
+					</div>
+					<label class="slider">Lebar mulut <input type="range" id="mouthW" min="40" max="260" value="120" /></label>
+					<label class="slider">Tinggi mulut <input type="range" id="mouthH" min="20" max="160" value="60" /></label>
+					<label class="slider">Gerak badan <input type="range" id="bodyMotion" min="0" max="200" value="100" /></label>
+					<label class="slider">Kekuatan lipsync <input type="range" id="lipGain" min="40" max="220" value="110" /></label>
+				</div>
+
+				<div class="group">
+					<h3>3. Karakter Suara</h3>
+					<p class="hint">Sesuaikan karakter dan nada suara avatar.</p>
+					<label class="slider">Gaya Suara
+						<select id="voicePreset" style="width:100%; margin-top:6px; background:#1b2432; color:#fff; border:1px solid rgba(255,255,255,0.2); border-radius:8px; padding:7px 10px; font-size:13px;">
+							<option value="macho" selected>Cowok Macho (Deep / Bariton)</option>
+							<option value="bass">Ultra Deep (Bass Berat)</option>
+							<option value="normal">Standar Normal</option>
+						</select>
+					</label>
+					<label class="slider">Pitch (Frekuensi) <input type="range" id="voicePitch" min="50" max="130" value="72" /></label>
+					<label class="slider">Kecepatan <input type="range" id="voiceRate" min="70" max="130" value="94" /></label>
+				</div>
+
+				<div class="group">
+					<h3>4. Kloning Suara</h3>
+					<p class="hint">Unggah rekaman 1-3 menit (bicara jelas, tanpa musik) untuk dikloning di ElevenLabs.</p>
+					<input type="file" id="voiceInput" accept="audio/*" hidden />
+					<div class="row">
+						<button class="btn" id="pickVoice" type="button">Unggah sample suara</button>
+					</div>
+					<p class="hint" id="voiceResult"></p>
+				</div>
+
+				<div class="group">
+					<h3>5. Status mesin</h3>
+					<ul class="status-list" id="statusList"></ul>
+					<p class="hint">Ubah provider di file <code>.env</code>, lalu jalankan ulang server.</p>
+				</div>
+			</div>
+		</aside>
+		<div class="scrim" id="scrim" hidden></div>
+
+		<!-- Overlay kalibrasi -->
+		<div class="calib" id="calibOverlay" hidden>
+			<p id="calibStep">Klik tengah MULUT pada foto</p>
+			<button class="btn btn-ghost btn-sm" id="calibCancel" type="button">Batal</button>
+		</div>
+
+		<audio id="player" hidden></audio>
+		<script type="module" src="js/app.js?v=2070"></script>
+	</body>
+</html>

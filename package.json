@@ -1,0 +1,21 @@
+{
+  "name": "avatar-ai-lifetime",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Avatar AI Lifetime - foto Anda bergerak (mulut + badan), bicara dengan suara kloning Anda, dan menjawab apa pun secara real-time di web.",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "clone-voice": "node scripts/clone-voice.js",
+    "check": "node scripts/check-providers.js"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.0.7",
+    "simli-client": "^3.0.2"
+  },
+  "license": "MIT"
+}
