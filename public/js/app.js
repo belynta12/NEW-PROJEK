@@ -1,4 +1,4 @@
-import { PhotoPuppet } from "./puppet.js?v=2070"
+import { PhotoPuppet } from "./puppet.js"
 import {
 	Recorder,
 	Speaker,
@@ -8,8 +8,8 @@ import {
 	stopBrowserTts,
 	audioContext,
 	setVoiceSettings,
-	getVoiceSettings,
-} from "./audio.js?v=2070"
+} from "./audio.js"
+import { configureVision, detectFace, readFaceCache, writeFaceCache, clearFaceCache, pointsFromArrays } from "./face-detect.js"
 
 /* ------------------------------- elemen ------------------------------- */
 const $ = (id) => document.getElementById(id)
@@ -40,12 +40,11 @@ const el = {
 	useSample: $("useSample"),
 	emptyUploadBtn: $("emptyUploadBtn"),
 	calibrateBtn: $("calibrateBtn"),
-	resetRig: $("resetRig"),
+	detectBtn: $("detectBtn"),
+	calibHint: $("calibHint"),
 	calibOverlay: $("calibOverlay"),
 	calibStep: $("calibStep"),
 	calibCancel: $("calibCancel"),
-	mouthW: $("mouthW"),
-	mouthH: $("mouthH"),
 	bodyMotion: $("bodyMotion"),
 	lipGain: $("lipGain"),
 	voiceInput: $("voiceInput"),
@@ -58,8 +57,9 @@ const el = {
 	player: $("player"),
 }
 
-const STORE = { photo: "aal.photo", rig: "aal.rig", tuning: "aal.tuning", voice: "aal.voice" }
+const STORE = { photo: "aal.photo", rig: "aal.rig.v2", tuning: "aal.tuning.v2", voice: "aal.voice" }
 const SAMPLE_PHOTO = "assets/avatar.jpg"
+const SAMPLE_LANDMARKS = "assets/avatar.landmarks.json"
 
 /* -------------------------------- state ------------------------------- */
 let config = {
@@ -75,10 +75,14 @@ let busy = false
 let handsFree = false
 let calibrating = null
 let turnId = 0
+let currentPhotoSrc = ""
+let faceState = { status: "none", label: "Belum ada foto" } // none | detecting | auto | manual | failed
+let faceJob = 0
 
 const puppet = new PhotoPuppet(el.canvas)
 const speaker = new Speaker(el.player, {
 	onLevel: (level, tone) => puppet.setLevel(level, tone),
+	onMouth: (m) => puppet.setMouth(m),
 })
 let recorder = null
 let browserStt = null
@@ -123,6 +127,22 @@ function sttLang() {
 	return base.includes("-") ? base : base + "-" + base.toUpperCase()
 }
 
+function readJson(key) {
+	try {
+		return JSON.parse(localStorage.getItem(key) || "null")
+	} catch {
+		return null
+	}
+}
+
+function writeJson(key, value) {
+	try {
+		localStorage.setItem(key, JSON.stringify(value))
+	} catch {
+		/* penuh - abaikan */
+	}
+}
+
 /* ------------------------------ konfigurasi --------------------------- */
 async function loadConfig() {
 	try {
@@ -133,80 +153,51 @@ async function loadConfig() {
 	} catch {
 		serverOnline = false
 	}
+	if (config.vision) configureVision(config.vision)
 
 	el.personaName.textContent = config.persona.name || "Avatar AI Lifetime"
 	document.title = el.personaName.textContent + " - Avatar AI"
 
 	if (!serverOnline) setPill("Server tidak terhubung", "warn")
-	else if (!config.llm.ready) setPill("API key LLM belum diisi", "warn")
+	else if (config.llm.online === false) setPill("Mode demo (API key LLM kosong)", "warn")
 	else setPill(config.llm.label + " + " + config.tts.label.split(" (")[0], "ok")
 
 	renderStatus()
 }
 
 function renderStatus() {
-	const mark = (ok) =>
-		ok ? '<span class="good">siap</span>' : '<span class="bad">belum diisi</span>'
+	const mark = (ok) => (ok ? '<span class="good">siap</span>' : '<span class="bad">belum diisi</span>')
+	const faceMark =
+		faceState.status === "auto"
+			? '<span class="good">' + faceState.label + "</span>"
+			: faceState.status === "manual"
+				? '<span class="good">' + faceState.label + "</span>"
+				: faceState.status === "detecting"
+					? "<span>" + faceState.label + "</span>"
+					: '<span class="bad">' + faceState.label + "</span>"
 	const rows = [
-		[
-			"Server",
-			serverOnline
-				? '<span class="good">terhubung</span>'
-				: '<span class="bad">mati</span>',
-		],
-		["Otak (LLM)", config.llm.label + " " + mark(config.llm.ready)],
+		["Server", serverOnline ? '<span class="good">terhubung</span>' : '<span class="bad">mati</span>'],
+		["Otak (LLM)", config.llm.label + " " + mark(config.llm.online !== false)],
 		["Dengar (STT)", config.stt.label + " " + mark(config.stt.ready)],
 		["Suara (TTS)", config.tts.label + " " + mark(config.tts.ready)],
-		["Avatar", config.avatarMode],
+		["Avatar", config.avatarMode + (puppet.legacy ? " (2D, tanpa WebGL)" : " (mesh 3D)")],
+		["Wajah", faceMark],
 	]
-	el.statusList.innerHTML = rows
-		.map((row) => "<li><b>" + row[0] + "</b><span>" + row[1] + "</span></li>")
-		.join("")
+	el.statusList.innerHTML = rows.map((row) => "<li><b>" + row[0] + "</b><span>" + row[1] + "</span></li>").join("")
+}
+
+function setFaceState(status, label) {
+	faceState = { status, label }
+	if (el.calibHint) el.calibHint.textContent = label
+	renderStatus()
 }
 
 /* --------------------------------- foto -------------------------------- */
-function readJson(key) {
-	try {
-		return JSON.parse(localStorage.getItem(key) || "null")
-	} catch {
-		return null
-	}
-}
-
-function saveRig() {
-	try {
-		localStorage.setItem(
-			STORE.rig,
-			JSON.stringify({ src: localStorage.getItem(STORE.photo), rig: puppet.rig }),
-		)
-	} catch {
-		/* abaikan */
-	}
-}
-
 async function applyPhoto(src, options) {
 	const save = !options || options.save !== false
+	const fresh = Boolean(options && options.fresh)
 	await puppet.setImage(src)
-	const savedRig = readJson(STORE.rig)
-	if (src && (src.includes("avatar-nofal") || src.includes("avatar-04634437a696"))) {
-		puppet.setRig({
-			eyeL: { x: 435, y: 412, w: 32, h: 14 },
-			eyeR: { x: 476, y: 416, w: 30, h: 14 },
-			mouth: { x: 440, y: 476, w: 54, h: 20 },
-			head: { x: 480, y: 430, rx: 115, ry: 150 },
-		})
-	} else if (src && src.includes("avatar.jpg")) {
-		puppet.setRig({
-			eyeL: { x: 176, y: 167, w: 30, h: 12 },
-			eyeR: { x: 238, y: 169, w: 30, h: 12 },
-			mouth: { x: 208, y: 229, w: 56, h: 16 },
-			head: { x: 207, y: 168, rx: 105, ry: 135 },
-		})
-	} else if (savedRig && savedRig.src === src && savedRig.rig) {
-		puppet.setRig(savedRig.rig)
-	} else {
-		puppet.autoRig()
-	}
+	currentPhotoSrc = src
 	applyTuning()
 	el.stageEmpty.hidden = true
 	puppet.start()
@@ -217,7 +208,82 @@ async function applyPhoto(src, options) {
 			/* foto terlalu besar untuk localStorage - tidak masalah */
 		}
 	}
-	syncSliders()
+	await setupFace(src, { fresh })
+}
+
+/** Siapkan rig wajah: landmark bawaan -> cache -> kalibrasi manual tersimpan -> deteksi otomatis. */
+async function setupFace(src, { fresh = false, force = false } = {}) {
+	const job = ++faceJob
+	const alive = () => job === faceJob && currentPhotoSrc === src
+	setFaceState("detecting", "Menyiapkan wajah...")
+
+	const savedRig = readJson(STORE.rig)
+	if (!force && savedRig && savedRig.src === src && savedRig.template && savedRig.preferManual) {
+		try {
+			puppet.setTemplateRig(savedRig.template)
+			setFaceState("manual", "Kalibrasi manual aktif")
+			return
+		} catch (error) {
+			console.warn("rig manual rusak:", error)
+		}
+	}
+
+	if (!force && src === SAMPLE_PHOTO) {
+		try {
+			const response = await fetch(SAMPLE_LANDMARKS, { cache: "force-cache" })
+			if (response.ok) {
+				const data = await response.json()
+				if (!alive()) return
+				puppet.setLandmarks(pointsFromArrays(data.points))
+				setFaceState("auto", "Wajah terdeteksi otomatis (478 titik)")
+				return
+			}
+		} catch {
+			/* lanjut ke deteksi */
+		}
+	}
+
+	if (!force) {
+		const cached = readFaceCache(src)
+		if (cached) {
+			try {
+				puppet.setLandmarks(pointsFromArrays(cached.points))
+				setFaceState("auto", "Wajah terdeteksi otomatis (478 titik)")
+				return
+			} catch (error) {
+				console.warn("cache wajah rusak:", error)
+			}
+		}
+	}
+
+	try {
+		const points = await detectFace(puppet.image, {
+			onStatus: (msg) => {
+				if (alive()) setFaceState("detecting", msg)
+			},
+		})
+		if (!alive()) return
+		puppet.setLandmarks(points)
+		writeFaceCache(src, { points, W: puppet.image.naturalWidth, H: puppet.image.naturalHeight })
+		setFaceState("auto", "Wajah terdeteksi otomatis (478 titik)")
+		if (fresh) addMessage("sys", "Wajah terdeteksi otomatis. Avatar siap.")
+	} catch (error) {
+		if (!alive()) return
+		console.warn("[face]", error)
+		const savedTemplate = savedRig && savedRig.src === src && savedRig.template
+		if (savedTemplate) {
+			try {
+				puppet.setTemplateRig(savedTemplate)
+				setFaceState("manual", "Kalibrasi manual aktif")
+				return
+			} catch {
+				/* lanjut */
+			}
+		}
+		setFaceState("failed", "Wajah tidak terdeteksi otomatis. Klik Kalibrasi manual.")
+		addMessage("err", error.message + " Anda bisa menandai mulut dan mata secara manual.")
+		if (fresh) startCalibration()
+	}
 }
 
 function fileToDataUrl(file) {
@@ -239,21 +305,21 @@ async function uploadPhoto(file) {
 			})
 			if (response.ok) {
 				const data = await response.json()
-				await applyPhoto(data.url)
+				await applyPhoto(data.url, { fresh: true })
 				return
 			}
 		} catch {
 			/* jatuh ke data URL di bawah */
 		}
 	}
-	await applyPhoto(await fileToDataUrl(file))
+	await applyPhoto(await fileToDataUrl(file), { fresh: true })
 }
 
 /* ------------------------------ kalibrasi ------------------------------ */
 const CALIB_STEPS = [
-	{ key: "mouth", text: "Klik tengah MULUT pada foto" },
-	{ key: "eyeL", text: "Klik mata KIRI (sebelah kiri layar)" },
-	{ key: "eyeR", text: "Klik mata KANAN (sebelah kanan layar)" },
+	{ key: "mouth", text: "Klik tengah MULUT (garis pertemuan bibir)" },
+	{ key: "eyeL", text: "Klik pupil mata KIRI (sebelah kiri layar)" },
+	{ key: "eyeR", text: "Klik pupil mata KANAN (sebelah kanan layar)" },
 ]
 
 function startCalibration() {
@@ -262,33 +328,27 @@ function startCalibration() {
 	el.calibOverlay.hidden = false
 	el.stage.classList.add("calibrating")
 	el.calibStep.textContent = CALIB_STEPS[0].text
+	puppet.showGuides = true
 	closeDrawer()
 }
 
 function endCalibration(apply) {
 	if (apply && calibrating) {
 		const picks = calibrating.picks
-		const width = puppet.image.naturalWidth
-		const height = puppet.image.naturalHeight
-		const eyeDist = Math.max(width * 0.04, Math.abs(picks.eyeR.x - picks.eyeL.x))
-		puppet.setRig({
-			mouth: {
-				x: picks.mouth.x,
-				y: picks.mouth.y,
-				w: eyeDist * 0.95,
-				h: eyeDist * 0.42,
-			},
-			eyeL: { x: picks.eyeL.x, y: picks.eyeL.y, w: eyeDist * 0.42, h: eyeDist * 0.16 },
-			eyeR: { x: picks.eyeR.x, y: picks.eyeR.y, w: eyeDist * 0.42, h: eyeDist * 0.16 },
-			head: { x: width * 0.5, y: height * 0.3, rx: width * 0.2, ry: height * 0.26 },
-		})
-		puppet.deriveHead()
-		saveRig()
-		syncSliders()
+		try {
+			const template = { eyeLeftScreen: picks.eyeL, eyeRightScreen: picks.eyeR, mouth: picks.mouth }
+			puppet.setTemplateRig(template)
+			writeJson(STORE.rig, { src: currentPhotoSrc, template, preferManual: true })
+			setFaceState("manual", "Kalibrasi manual aktif")
+			addMessage("sys", "Kalibrasi tersimpan. Untuk hasil paling natural, gunakan foto yang wajahnya terdeteksi otomatis.")
+		} catch (error) {
+			addMessage("err", "Kalibrasi gagal: " + error.message)
+		}
 	}
 	calibrating = null
 	el.calibOverlay.hidden = true
 	el.stage.classList.remove("calibrating")
+	puppet.showGuides = false
 }
 
 el.canvas.addEventListener("click", (event) => {
@@ -300,11 +360,20 @@ el.canvas.addEventListener("click", (event) => {
 	else el.calibStep.textContent = CALIB_STEPS[calibrating.index].text
 })
 
+async function redetectFace() {
+	if (!puppet.image || !currentPhotoSrc) return
+	clearFaceCache(currentPhotoSrc)
+	const savedRig = readJson(STORE.rig)
+	if (savedRig && savedRig.src === currentPhotoSrc) writeJson(STORE.rig, { ...savedRig, preferManual: false })
+	closeDrawer()
+	await setupFace(currentPhotoSrc, { force: true })
+}
+
 /* -------------------------- slider penyetelan ------------------------- */
 function applyTuning() {
 	const tuning = readJson(STORE.tuning) || {}
 	const body = tuning.bodyMotion === undefined ? 100 : tuning.bodyMotion
-	const lip = (tuning.lipGain === undefined || tuning.lipGain < 155) ? 160 : tuning.lipGain
+	const lip = tuning.lipGain === undefined ? 100 : tuning.lipGain
 	puppet.bodyMotion = body / 100
 	puppet.lipGain = lip / 100
 	el.bodyMotion.value = body
@@ -314,30 +383,14 @@ function applyTuning() {
 	const pitch = voice.pitch !== undefined ? voice.pitch : 72
 	const rate = voice.rate !== undefined ? voice.rate : 94
 	const preset = voice.preset || "macho"
-
 	if (el.voicePitch) el.voicePitch.value = pitch
 	if (el.voiceRate) el.voiceRate.value = rate
 	if (el.voicePreset) el.voicePreset.value = preset
-
-	setVoiceSettings({
-		pitch: pitch / 100,
-		rate: rate / 100,
-		macho: preset !== "normal",
-	})
+	setVoiceSettings({ pitch: pitch / 100, rate: rate / 100, macho: preset !== "normal" })
 }
 
 function saveTuning() {
-	try {
-		localStorage.setItem(
-			STORE.tuning,
-			JSON.stringify({
-				bodyMotion: Number(el.bodyMotion.value),
-				lipGain: Number(el.lipGain.value),
-			}),
-		)
-	} catch {
-		/* abaikan */
-	}
+	writeJson(STORE.tuning, { bodyMotion: Number(el.bodyMotion.value), lipGain: Number(el.lipGain.value) })
 }
 
 function saveVoiceSettings() {
@@ -345,36 +398,10 @@ function saveVoiceSettings() {
 	const pitch = Number(el.voicePitch.value)
 	const rate = Number(el.voiceRate.value)
 	const preset = el.voicePreset ? el.voicePreset.value : "macho"
-	setVoiceSettings({
-		pitch: pitch / 100,
-		rate: rate / 100,
-		macho: preset !== "normal",
-	})
-	try {
-		localStorage.setItem(STORE.voice, JSON.stringify({ pitch, rate, preset }))
-	} catch {
-		/* abaikan */
-	}
+	setVoiceSettings({ pitch: pitch / 100, rate: rate / 100, macho: preset !== "normal" })
+	writeJson(STORE.voice, { pitch, rate, preset })
 }
 
-function syncSliders() {
-	if (!puppet.rig || !puppet.image) return
-	el.mouthW.max = Math.round(puppet.image.naturalWidth * 0.5)
-	el.mouthH.max = Math.round(puppet.image.naturalHeight * 0.3)
-	el.mouthW.value = Math.round(puppet.rig.mouth.w)
-	el.mouthH.value = Math.round(puppet.rig.mouth.h)
-}
-
-el.mouthW.addEventListener("input", () => {
-	if (!puppet.rig) return
-	puppet.rig.mouth.w = Number(el.mouthW.value)
-	saveRig()
-})
-el.mouthH.addEventListener("input", () => {
-	if (!puppet.rig) return
-	puppet.rig.mouth.h = Number(el.mouthH.value)
-	saveRig()
-})
 el.bodyMotion.addEventListener("input", () => {
 	puppet.bodyMotion = Number(el.bodyMotion.value) / 100
 	saveTuning()
@@ -416,10 +443,8 @@ function extractSentences(text, isFinal) {
 		// agar TTS memproses audio secara instan (memangkas delay respons)
 		const isMinorEnd =
 			result.length === 0 &&
-			(
-				((ch === "," || ch === ";" || ch === ":") && wordsCount(current) >= 3) ||
-				(wordsCount(current) >= 7 && /\s/.test(ch))
-			)
+			(((ch === "," || ch === ";" || ch === ":") && wordsCount(current) >= 3) ||
+				(wordsCount(current) >= 7 && /\s/.test(ch)))
 
 		if (isMajorEnd || isMinorEnd) {
 			const nextCh = text[i + 1]
@@ -445,19 +470,6 @@ function cleanForSpeech(text) {
 		.trim()
 }
 
-async function fetchTts(text) {
-	const response = await fetch("/api/tts", {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ text }),
-	})
-	if (!response.ok) {
-		const detail = await response.json().catch(() => ({}))
-		throw new Error(detail.error || "TTS gagal (" + response.status + ")")
-	}
-	return URL.createObjectURL(await response.blob())
-}
-
 async function fetchTtsBlob(text) {
 	const response = await fetch("/api/tts", {
 		method: "POST",
@@ -471,22 +483,23 @@ async function fetchTtsBlob(text) {
 	return await response.blob()
 }
 
+const browserSpeak = (text) => speakWithBrowser(text, { lang: sttLang(), onMouth: (m) => puppet.setMouth(m) })
+
 /** Antrean kalimat: kalimat pertama diucapkan sementara sisanya masih dibuat. */
 function createSpeechQueue(myTurn) {
 	let chain = Promise.resolve()
-	const useServerTts =
-		serverOnline && config.tts.provider !== "browser" && config.tts.ready
+	const useServerTts = serverOnline && config.tts.provider !== "browser" && config.tts.ready
 	const isDid = Boolean(config.avatarMode === "did" && didModule)
 	const isSimli = Boolean(config.avatarMode === "simli" && simliModule && simliModule.isSimliReady())
 
 	const push = (sentence) => {
 		const text = cleanForSpeech(sentence)
 		if (!text) return
-		const prefetchBlob = (useServerTts && (isDid || isSimli))
-			? fetchTtsBlob(text).catch((error) => error)
-			: null
-		const prefetchUrl = (useServerTts && !isDid && !isSimli)
-			? fetchTts(text).catch((error) => error)
+		// unduh audio + siapkan lipsync lebih awal (sambil kalimat sebelumnya masih diputar)
+		const prefetch = useServerTts
+			? fetchTtsBlob(text)
+					.then((blob) => (isDid ? { blob, text } : speaker.prepare({ blob, text })))
+					.catch((error) => error)
 			: null
 
 		chain = chain.then(async () => {
@@ -494,49 +507,35 @@ function createSpeechQueue(myTurn) {
 			setState("speaking")
 			showCaption(text)
 			try {
-				if (isSimli && prefetchBlob) {
-					const blob = await prefetchBlob
-					if (blob instanceof Error) throw blob
+				if (prefetch) {
+					const item = await prefetch
+					if (item instanceof Error) throw item
 					if (turnId !== myTurn) return
-					const audioUrl = URL.createObjectURL(blob)
-					await Promise.all([
-						speaker.enqueue(audioUrl),
-						simliModule.speakSimli(blob).catch((err) => console.warn("[simli] speak error:", err.message)),
-					])
-				} else if (isDid && prefetchBlob) {
-					const blob = await prefetchBlob
-					if (blob instanceof Error) throw blob
-					if (turnId !== myTurn) return
-					try {
-						await didModule.speakDid(blob)
-					} catch (didErr) {
-						console.warn("[did] gagal bicara, fallback ke audio:", didErr.message)
-						addMessage("err", "D-ID (" + didErr.message + ") -> Memutar suara langsung...")
-						const audioUrl = URL.createObjectURL(blob)
-						el.video.hidden = true
-						el.canvas.hidden = false
-						puppet.start()
-						await speaker.enqueue(audioUrl)
+					if (isSimli) {
+						await Promise.all([
+							speaker.enqueue(item),
+							simliModule.speakSimli(item.blob).catch((err) => console.warn("[simli] speak error:", err.message)),
+						])
+					} else if (isDid) {
+						try {
+							await didModule.speakDid(item.blob)
+						} catch (didErr) {
+							console.warn("[did] gagal bicara, fallback ke audio:", didErr.message)
+							addMessage("err", "D-ID (" + didErr.message + ") -> Memutar suara langsung...")
+							el.video.hidden = true
+							el.canvas.hidden = false
+							puppet.start()
+							await speaker.enqueue(await speaker.prepare({ blob: item.blob, text }))
+						}
+					} else {
+						await speaker.enqueue(item)
 					}
-				} else if (prefetchUrl) {
-					const url = await prefetchUrl
-					if (url instanceof Error) throw url
-					if (turnId !== myTurn) return
-					await speaker.enqueue(url)
 				} else {
-					await speakWithBrowser(text, {
-						lang: sttLang(),
-						onLevel: (level, tone) => puppet.setLevel(level, tone),
-					})
+					await browserSpeak(text)
 				}
 			} catch (error) {
 				addMessage("err", "Suara gagal: " + error.message)
-				if (!isDid) {
-					await speakWithBrowser(text, {
-						lang: sttLang(),
-						onLevel: (level, tone) => puppet.setLevel(level, tone),
-					})
-				}
+				if (!isDid && turnId === myTurn) await browserSpeak(text)
 			}
 		})
 	}
@@ -551,6 +550,7 @@ async function ask(userText) {
 	busy = true
 	turnId += 1
 	const myTurn = turnId
+	audioContext()
 	speaker.stop()
 	stopBrowserTts()
 
@@ -565,7 +565,7 @@ async function ask(userText) {
 	let spokenUpTo = 0
 
 	const flush = (final) => {
-		if (config.avatarMode === "did") {
+		if (config.avatarMode === "did" && didModule) {
 			if (final && full.trim() && spokenUpTo === 0) {
 				spokenUpTo = 1
 				queue.push(full.trim())
@@ -701,14 +701,11 @@ async function startListening(auto) {
 				setState("thinking", "Mengubah suara ke teks...")
 				try {
 					const blob = result.blob
-					const response = await fetch(
-						"/api/stt?mime=" + encodeURIComponent(blob.type || "audio/webm"),
-						{
-							method: "POST",
-							headers: { "content-type": blob.type || "audio/webm" },
-							body: blob,
-						},
-					)
+					const response = await fetch("/api/stt?mime=" + encodeURIComponent(blob.type || "audio/webm"), {
+						method: "POST",
+						headers: { "content-type": blob.type || "audio/webm" },
+						body: blob,
+					})
 					const data = await response.json()
 					if (!response.ok) throw new Error(data.error || "STT gagal")
 					if (!data.text) {
@@ -810,30 +807,27 @@ el.emptyUploadBtn.addEventListener("click", () => el.photoInput.click())
 el.photoInput.addEventListener("change", async () => {
 	const file = el.photoInput.files && el.photoInput.files[0]
 	if (!file) return
+	el.photoInput.value = ""
 	try {
+		closeDrawer()
+		addMessage("sys", "Foto dipasang. Mendeteksi wajah...")
 		await uploadPhoto(file)
-		addMessage("sys", "Foto dipasang. Lanjutkan kalibrasi agar mulut pas.")
-		startCalibration()
 	} catch (error) {
 		addMessage("err", error.message)
 	}
 })
 el.useSample.addEventListener("click", async () => {
 	try {
-		await applyPhoto(SAMPLE_PHOTO)
 		closeDrawer()
+		await applyPhoto(SAMPLE_PHOTO)
 	} catch (error) {
 		addMessage("err", error.message)
 	}
 })
 
 el.calibrateBtn.addEventListener("click", startCalibration)
+el.detectBtn?.addEventListener("click", () => redetectFace().catch((error) => addMessage("err", error.message)))
 el.calibCancel.addEventListener("click", () => endCalibration(false))
-el.resetRig.addEventListener("click", () => {
-	puppet.autoRig()
-	saveRig()
-	syncSliders()
-})
 
 el.pickVoice.addEventListener("click", () => el.voiceInput.click())
 el.voiceInput.addEventListener("change", async () => {
@@ -841,20 +835,15 @@ el.voiceInput.addEventListener("change", async () => {
 	if (!file) return
 	el.voiceResult.textContent = "Mengunggah dan mengkloning suara..."
 	try {
-		const response = await fetch(
-			"/api/voice/clone?name=" + encodeURIComponent("Suara Saya"),
-			{
-				method: "POST",
-				headers: { "content-type": file.type || "audio/mpeg" },
-				body: file,
-			},
-		)
+		const response = await fetch("/api/voice/clone?name=" + encodeURIComponent("Suara Saya"), {
+			method: "POST",
+			headers: { "content-type": file.type || "audio/mpeg" },
+			body: file,
+		})
 		const data = await response.json()
 		if (!response.ok) throw new Error(data.error || "Gagal")
 		el.voiceResult.innerHTML =
-			"Berhasil. Salin ke file .env lalu restart server:<br><code>ELEVENLABS_VOICE_ID=" +
-			data.voiceId +
-			"</code>"
+			"Berhasil. Salin ke file .env lalu restart server:<br><code>ELEVENLABS_VOICE_ID=" + data.voiceId + "</code>"
 	} catch (error) {
 		el.voiceResult.textContent = "Gagal: " + error.message
 	}
@@ -874,10 +863,6 @@ window.addEventListener("keyup", (event) => {
 	if (event.code === "Space" && !handsFree) stopListening()
 })
 
-setInterval(() => {
-	if (calibrating) puppet.drawGuides()
-}, 140)
-
 /* -------------------------------- mulai ------------------------------- */
 async function init() {
 	setState("idle")
@@ -885,24 +870,21 @@ async function init() {
 	calibrating = null
 	await loadConfig()
 
-	// 1. Muat foto portrait avatar yang sebelumnya (assets/avatar.jpg)
-	let photoToUse = localStorage.getItem(STORE.photo)
-	if (photoToUse && (photoToUse.includes("avatar-nofal") || photoToUse.includes("avatar-04634437a696"))) {
-		try { localStorage.removeItem(STORE.photo); localStorage.removeItem(STORE.rig) } catch {}
-		photoToUse = SAMPLE_PHOTO
-	}
-	if (!photoToUse) photoToUse = SAMPLE_PHOTO
+	// 1. Muat foto: yang terakhir dipakai, atau foto contoh
+	let photoToUse = localStorage.getItem(STORE.photo) || SAMPLE_PHOTO
+	el.canvas.hidden = false
+	el.video.hidden = true
 	try {
-		await applyPhoto(photoToUse, { save: true })
-	} catch {
+		await applyPhoto(photoToUse, { save: false })
+	} catch (error) {
+		console.warn("foto tersimpan gagal dimuat:", error)
 		try {
-			await applyPhoto(SAMPLE_PHOTO, { save: true })
+			localStorage.removeItem(STORE.photo)
+			await applyPhoto(SAMPLE_PHOTO, { save: false })
 		} catch {
 			el.stageEmpty.hidden = false
 		}
 	}
-	el.canvas.hidden = false
-	el.video.hidden = true
 
 	// 2. Hubungkan avatar video streaming jika aktif
 	if (config.avatarMode === "simli" && serverOnline) {
@@ -923,12 +905,11 @@ async function init() {
 					el.canvas.hidden = false
 					puppet.start()
 				},
-				onStatus: (msg) => {
-					console.log("[Simli]", msg)
-				},
+				onStatus: (msg) => console.log("[Simli]", msg),
 			})
 		} catch (error) {
 			console.error("Simli startup error:", error)
+			addMessage("err", "Simli gagal (" + error.message + "). Memakai avatar foto.")
 			el.canvas.hidden = false
 			el.video.hidden = true
 			puppet.start()
@@ -936,43 +917,38 @@ async function init() {
 	} else if (config.avatarMode === "did" && serverOnline) {
 		try {
 			didModule = await import("./did.js")
-			didModule.startDid({
-				videoEl: el.video,
-				onTrack: () => {
-					el.stageEmpty.hidden = true
-					el.canvas.hidden = true
-					el.video.hidden = false
-					puppet.stop()
-					addMessage("sys", "Avatar video real-time D-ID aktif!")
-				},
-				onError: (err) => {
-					console.warn("D-ID streaming issue:", err)
-					el.video.hidden = true
+			didModule
+				.startDid({
+					videoEl: el.video,
+					onTrack: () => {
+						el.stageEmpty.hidden = true
+						el.canvas.hidden = true
+						el.video.hidden = false
+						puppet.stop()
+						addMessage("sys", "Avatar video real-time D-ID aktif!")
+					},
+					onError: (err) => {
+						console.warn("D-ID streaming issue:", err)
+						el.video.hidden = true
+						el.canvas.hidden = false
+						puppet.start()
+					},
+				})
+				.catch((error) => {
+					console.warn("D-ID info:", error.message)
+					didModule = null
 					el.canvas.hidden = false
+					el.video.hidden = true
 					puppet.start()
-				},
-			}).catch((error) => {
-				console.warn("D-ID info:", error.message)
-				didModule = null
-				el.canvas.hidden = false
-				el.video.hidden = true
-				puppet.start()
-			})
+				})
 		} catch (error) {
 			console.error("D-ID import error:", error)
 		}
 	} else if (config.avatarMode === "heygen" && serverOnline) {
-		try {
-			const module = await import("./heygen.js")
-			await module.startHeygen({
-				videoEl: el.video,
-				canvasEl: el.canvas,
-				onMessage: addMessage,
-			})
-			el.stageEmpty.hidden = true
-		} catch (error) {
-			addMessage("err", "Mode HeyGen gagal: " + error.message + ". Kembali ke mode foto.")
-		}
+		addMessage(
+			"err",
+			"Mode HeyGen belum tersedia di versi web ini (butuh SDK HeyGen). Memakai avatar foto. Ubah AVATAR_MODE=puppet di .env untuk menghilangkan pesan ini.",
+		)
 	}
 
 	addMessage(

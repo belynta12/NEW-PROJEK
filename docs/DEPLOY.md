@@ -18,11 +18,13 @@ di HP. Cocok untuk demo ke klien.
 
 1. Unggah folder ini ke GitHub.
 2. Buat service baru dari repo tersebut.
-3. Build command: kosongkan. Start command: `npm start`.
+3. Build command: `npm install`. Start command: `npm start`.
 4. Tambahkan semua variabel dari `.env` di menu Environment / Variables.
 5. Set `PORT` mengikuti nilai yang diberikan platform (biasanya otomatis).
 
-Proyek ini tidak punya dependency npm, jadi build-nya sangat cepat.
+Dependency npm hanya dua paket kecil, jadi build-nya cepat. Browser pengunjung
+perlu akses internet ke `cdn.jsdelivr.net` dan `storage.googleapis.com` untuk
+mengunduh model deteksi wajah (~4 MB, sekali, lalu di-cache).
 
 ## Pilihan 3 - VPS sendiri (Rp 30-60 ribu / bulan)
 

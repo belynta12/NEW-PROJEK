@@ -85,7 +85,7 @@ Penghematan yang sudah aktif di proyek ini:
 
 | Pilihan | Biaya | Kualitas gerak |
 | --- | --- | --- |
-| `puppet` (bawaan proyek) | 0 | Mulut, kepala, badan, kedip. Cukup meyakinkan untuk foto setengah badan |
+| `puppet` (bawaan proyek) | 0 | Mesh 478 titik wajah: rahang, bibir per viseme, kelopak, alis, pipi, kepala 3D semu, napas. Deteksi wajah MediaPipe gratis di browser |
 | D-ID Talks | mulai ~$6 / bulan, per video | Lipsync rapi, ada jeda render beberapa detik |
 | HeyGen Interactive Avatar | ~$29+ / bulan | Paling mirip manusia, streaming real-time |
 | Simli | ada tier gratis developer | Streaming lipsync, lebih murah dari HeyGen |

@@ -43,6 +43,9 @@ const MIME = {
 	".wav": "audio/wav",
 	".webm": "audio/webm",
 	".woff2": "font/woff2",
+	".wasm": "application/wasm",
+	".task": "application/octet-stream",
+	".tflite": "application/octet-stream",
 	".txt": "text/plain; charset=utf-8",
 	".md": "text/markdown; charset=utf-8",
 }

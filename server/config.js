@@ -150,6 +150,18 @@ function build() {
 				sourceUrl: str(process.env.DID_SOURCE_URL),
 			},
 		},
+		vision: {
+			// Deteksi wajah di browser (MediaPipe). Boleh diarahkan ke salinan lokal/CDN lain.
+			tasksUrl: str(process.env.VISION_TASKS_URL, "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14"),
+			modelUrl: str(
+				process.env.VISION_MODEL_URL,
+				"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
+			),
+			detectorUrl: str(
+				process.env.VISION_DETECTOR_URL,
+				"https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+			),
+		},
 		persona: {
 			name: str(process.env.PERSONA_NAME, "Avatar Saya"),
 			language: str(process.env.PERSONA_LANGUAGE, "Bahasa Indonesia"),
@@ -183,6 +195,7 @@ export function publicConfig() {
 	return {
 		persona: c.persona,
 		avatarMode: c.avatar.mode,
+		vision: c.vision,
 		llm: {
 			provider: c.llm.provider,
 			label: Boolean(c.llm.apiKey) ? c.llm.label : `${c.llm.label} (Demo)`,

@@ -1,10 +1,12 @@
 /**
  * Semua urusan audio di browser:
  *  - Recorder   : rekam mikrofon + deteksi diam (VAD) untuk mode ngobrol otomatis
- *  - Speaker    : mainkan audio balasan sambil mengukur amplitudo (untuk lipsync)
+ *  - Speaker    : mainkan audio balasan (WebAudio) + lipsync viseme dari teks & audio
  *  - BrowserStt : pengenalan suara gratis bawaan Chrome/Edge
  *  - browserTts : suara bawaan browser (dipakai kalau belum ada API key)
  */
+
+import { analyzeEnvelope, buildTrack, normalizeSpeechText } from "./lipsync.js"
 
 let sharedCtx = null
 export function audioContext() {
@@ -137,46 +139,91 @@ export class Recorder {
 	}
 }
 
-/** Pemutar audio balasan + pengukur amplitudo untuk lipsync. */
+/**
+ * Pemutar audio balasan + lipsync.
+ *
+ * enqueue(item): item = hasil prepare({ blob, text }) -> diputar lewat WebAudio
+ * (timing akurat sampai sampel) dan tiap frame memanggil onMouth(params) dari
+ * VisemeTrack (teks + amplop audio). Bila hanya URL yang diberikan, dipakai
+ * jalur lama: elemen <audio> + analyser -> onLevel(level, tone).
+ */
 export class Speaker {
-	constructor(audioElement, { onLevel, onStart, onEnd } = {}) {
+	constructor(audioElement, { onLevel, onMouth, onStart, onEnd } = {}) {
 		this.el = audioElement
 		this.onLevel = onLevel || (() => {})
+		this.onMouth = onMouth || (() => {})
 		this.onStart = onStart || (() => {})
 		this.onEnd = onEnd || (() => {})
 		this.queue = []
 		this.playing = false
 		this.stopped = false
 		this.connected = false
-		// JANGAN set crossOrigin - blob URL dari same-origin tidak butuh CORS
-		// dan setting ini menyebabkan Chrome memblokir analyser (semua nilai = 128/nol)
+		this.current = null // { source, startAt, track, gain }
+		this.watching = false
+		// JANGAN set crossOrigin pada elemen - blob URL same-origin tidak butuh CORS
+	}
+
+	/**
+	 * Siapkan satu potongan ucapan: decode audio + bangun track viseme.
+	 * Boleh dipanggil lebih awal (prefetch) supaya saat giliran diputar tidak ada jeda.
+	 */
+	async prepare({ blob, text }) {
+		const ctx = audioContext()
+		const arrayBuffer = await blob.arrayBuffer()
+		let buffer
+		try {
+			buffer = await ctx.decodeAudioData(arrayBuffer.slice(0))
+		} catch (error) {
+			// decode gagal (format aneh): jatuh ke elemen <audio>
+			console.warn("[speaker] decode gagal, pakai <audio>:", error?.message || error)
+			return { url: URL.createObjectURL(blob), text, blob }
+		}
+		let track = null
+		try {
+			const info = analyzeEnvelope(buffer.getChannelData(0), buffer.sampleRate)
+			track = buildTrack(normalizeSpeechText(text || ""), { envInfo: info })
+		} catch (error) {
+			console.warn("[speaker] lipsync gagal:", error?.message || error)
+		}
+		return { buffer, track, text, blob, duration: buffer.duration }
 	}
 
 	connect() {
 		if (this.connected) return
 		try {
 			const ctx = audioContext()
-			this.node = ctx.createMediaElementSource(this.el)
 			this.analyser = ctx.createAnalyser()
 			this.analyser.fftSize = 1024
 			this.analyser.smoothingTimeConstant = 0.1
-			this.node.connect(this.analyser)
 			this.analyser.connect(ctx.destination)
 			this.timeData = new Uint8Array(this.analyser.fftSize)
 			this.freqData = new Uint8Array(this.analyser.frequencyBinCount)
+			this.node = ctx.createMediaElementSource(this.el)
+			this.node.connect(this.analyser)
 			this.connected = true
-			this.watch()
 		} catch (error) {
 			console.warn("Analyser gagal:", error)
 		}
 	}
 
+	/** Loop pengamat: lipsync per frame untuk item yang sedang diputar. */
 	watch() {
+		if (this.watching) return
+		this.watching = true
 		let runningMin = 0.03
 		let runningMax = 0.08
-
 		const tick = () => {
-			if (this.analyser && !this.el.paused && !this.el.ended) {
+			if (!this.playing) {
+				this.watching = false
+				return
+			}
+			const cur = this.current
+			if (cur && cur.track) {
+				const t = audioContext().currentTime - cur.startAt
+				const p = cur.track.at(t)
+				this.onMouth(p)
+			} else if (cur && cur.element && this.analyser && !this.el.paused && !this.el.ended) {
+				// jalur lama: perkiraan dari spektrum
 				this.analyser.getByteTimeDomainData(this.timeData)
 				let sum = 0
 				for (let i = 0; i < this.timeData.length; i++) {
@@ -184,54 +231,31 @@ export class Speaker {
 					sum += v * v
 				}
 				const rms = Math.sqrt(sum / this.timeData.length)
-
-				// Analisis spektrum frekuensi 512-bin untuk fonem & viseme
 				this.analyser.getByteFrequencyData(this.freqData)
-
-				// 1. Pelacak dinamis min & max suara bicara agar mulut bisa mengatup rapat di jeda
 				if (rms > 0.005) {
 					runningMin = Math.min(runningMin * 0.999 + rms * 0.001, rms)
 					runningMax = Math.max(runningMax * 0.995 + rms * 0.005, rms)
 				}
-				const dynamicFloor = Math.max(0.015, runningMin * 1.35)
-				const dynamicRange = Math.max(0.035, runningMax - dynamicFloor)
-
-				// 2. Pita formasi vokal & konsonan
-				let fLow = 0   // 180 - 750 Hz: vokal terbuka (/a/, /o/, /u/)
+				const floor = Math.max(0.015, runningMin * 1.35)
+				const range = Math.max(0.035, runningMax - floor)
+				let fLow = 0
 				for (let i = 4; i < 18; i++) fLow += this.freqData[i]
 				fLow /= 14 * 255
-
-				let fMid = 0   // 1000 - 2800 Hz: vokal depan lebar (/i/, /e/)
+				let fMid = 0
 				for (let i = 24; i < 65; i++) fMid += this.freqData[i]
 				fMid /= 41 * 255
-
-				let fHigh = 0  // 3200 - 7000 Hz: frikatif & sibilan (/s/, /t/, /c/)
+				let fHigh = 0
 				for (let i = 75; i < 160; i++) fHigh += this.freqData[i]
 				fHigh /= 85 * 255
-
-				// 3. Tingkat bukaan mulut (level: 0.0 = mengatup total, 1.0 = vokal terbuka maksimal)
 				let level = 0
-				if (rms > dynamicFloor) {
-					const norm = Math.min(1, Math.max(0, (rms - dynamicFloor) / dynamicRange))
-					// Respon ekspresif: kurva power 0.88 agar bukaan vokal lebih leluasa dan terbuka jelas
-					level = Math.min(1, Math.pow(norm, 0.88) * 1.25)
-
-					// Jika konsonan desis/gigi (s, t, c) dominan, tahan bukaan agar gigi merapat
-					if (fHigh > 0.08 && fHigh > fLow * 0.9) {
-						level = Math.min(level, 0.32)
-					}
+				if (rms > floor) {
+					const norm = Math.min(1, Math.max(0, (rms - floor) / range))
+					level = Math.min(1, Math.pow(norm, 0.9) * 0.95)
+					if (fHigh > 0.08 && fHigh > fLow * 0.9) level = Math.min(level, 0.3)
 				}
-
-				// 4. Bentuk lebar bibir (tone): 0.0 = bulat /o/ /u/, 1.0 = senyum lebar /i/ /e/
 				let tone = 0.5
-				if (fMid > fLow * 1.05) {
-					// Vokal /i/ atau /e/: bibir melebar ke samping
-					tone = Math.min(1, 0.5 + (fMid - fLow) * 1.8)
-				} else if (fLow > fMid * 1.15) {
-					// Vokal /o/ atau /u/: bibir membulat ke tengah
-					tone = Math.max(0, 0.5 - (fLow - fMid) * 1.5)
-				}
-
+				if (fMid > fLow * 1.05) tone = Math.min(1, 0.5 + (fMid - fLow) * 1.8)
+				else if (fLow > fMid * 1.15) tone = Math.max(0, 0.5 - (fLow - fMid) * 1.5)
 				this.onLevel(level, tone)
 			}
 			requestAnimationFrame(tick)
@@ -239,36 +263,91 @@ export class Speaker {
 		requestAnimationFrame(tick)
 	}
 
-	/** Tambahkan potongan audio ke antrean lalu mainkan berurutan. */
-	async enqueue(url) {
-		this.queue.push(url)
-		if (!this.playing) await this.pump()
+	/** Tambahkan item (hasil prepare) atau URL ke antrean lalu mainkan berurutan. */
+	enqueue(item) {
+		const entry = typeof item === "string" ? { url: item } : { ...item }
+		entry.done = new Promise((resolve) => (entry.resolveDone = resolve))
+		this.queue.push(entry)
+		if (!this.playing) this.pump()
+		return entry.done
 	}
 
 	async pump() {
 		this.playing = true
 		this.stopped = false
 		this.onStart()
+		this.watch()
 		while (this.queue.length && !this.stopped) {
-			const url = this.queue.shift()
-			await this.playOne(url)
+			const entry = this.queue.shift()
+			try {
+				if (entry.buffer) await this.playBuffer(entry)
+				else if (entry.url) await this.playElement(entry)
+			} catch (error) {
+				console.warn("[speaker] gagal memutar:", error)
+			} finally {
+				entry.resolveDone()
+			}
 		}
+		// item yang dibuang saat stop() tetap diselesaikan supaya pemanggil tidak menggantung
+		for (const entry of this.queue) entry.resolveDone()
+		this.queue = []
 		this.playing = false
+		this.current = null
+		this.onMouth(null)
 		this.onLevel(0, 0.5)
 		this.onEnd()
 	}
 
-	playOne(url) {
+	playBuffer(entry) {
+		return new Promise((resolve) => {
+			const ctx = audioContext()
+			const source = ctx.createBufferSource()
+			source.buffer = entry.buffer
+			const gain = ctx.createGain()
+			source.connect(gain)
+			gain.connect(ctx.destination)
+			const startAt = ctx.currentTime + 0.03
+			let finished = false
+			const finish = () => {
+				if (finished) return
+				finished = true
+				try {
+					source.disconnect()
+					gain.disconnect()
+				} catch {
+					/* abaikan */
+				}
+				if (this.current && this.current.source === source) this.current = null
+				resolve()
+			}
+			source.onended = finish
+			this.current = { source, gain, startAt, track: entry.track }
+			try {
+				source.start(startAt)
+			} catch (error) {
+				console.warn("[speaker] start gagal:", error)
+				finish()
+				return
+			}
+			// pengaman bila onended tidak terpanggil
+			setTimeout(finish, (entry.buffer.duration + 0.5) * 1000)
+		})
+	}
+
+	playElement(entry) {
 		return new Promise((resolve) => {
 			this.connect()
 			const ctx = audioContext()
 			if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {})
+			const url = entry.url
 			const cleanup = () => {
 				this.el.onended = null
 				this.el.onerror = null
 				if (url.startsWith("blob:")) URL.revokeObjectURL(url)
+				if (this.current && this.current.element) this.current = null
 				resolve()
 			}
+			this.current = { element: true, track: null }
 			this.el.onended = cleanup
 			this.el.onerror = cleanup
 			this.el.src = url
@@ -278,7 +357,17 @@ export class Speaker {
 
 	stop() {
 		this.stopped = true
+		for (const entry of this.queue) entry.resolveDone?.()
 		this.queue = []
+		const cur = this.current
+		if (cur && cur.source) {
+			try {
+				cur.gain.gain.setTargetAtTime(0, audioContext().currentTime, 0.015)
+				cur.source.stop(audioContext().currentTime + 0.05)
+			} catch {
+				/* sudah berhenti */
+			}
+		}
 		try {
 			this.el.pause()
 			this.el.currentTime = 0
@@ -286,6 +375,7 @@ export class Speaker {
 			/* abaikan */
 		}
 		stopBrowserTts()
+		this.onMouth(null)
 		this.onLevel(0, 0.5)
 	}
 }
@@ -384,7 +474,7 @@ export function bestVoice(lang, preferMacho = true) {
 
 let voiceSettings = {
 	pitch: 0.72, // Nada rendah bariton macho
-	rate: 0.94,  // Tempo stabil, percaya diri, berwibawa
+	rate: 0.94, // Tempo stabil, percaya diri, berwibawa
 	macho: true,
 }
 
@@ -411,36 +501,48 @@ export function stopBrowserTts() {
 }
 
 /**
- * Fallback gratis: suara browser. Dioptimalkan untuk suara cowok macho
- * dengan pitch rendah (0.72) dan cadence berwibawa (0.94).
+ * Fallback gratis: suara browser. Lipsync memakai viseme dari teks; waktu
+ * disinkronkan ulang tiap kata lewat event onboundary (bila browser mendukung).
  */
-export function speakWithBrowser(text, { lang = "id-ID", onLevel, pitch, rate } = {}) {
+export function speakWithBrowser(text, { lang = "id-ID", onLevel, onMouth, pitch, rate } = {}) {
 	return new Promise((resolve) => {
 		if (typeof speechSynthesis === "undefined") return resolve()
 		const utterance = new SpeechSynthesisUtterance(text)
 		const voice = bestVoice(lang, voiceSettings.macho)
 		if (voice) utterance.voice = voice
 		utterance.lang = voice?.lang || lang
-
-		// Gunakan nada cowok macho yang dalam dan berwibawa
 		utterance.rate = typeof rate === "number" ? rate : voiceSettings.rate
 		utterance.pitch = typeof pitch === "number" ? pitch : voiceSettings.pitch
 
+		const track = buildTrack(text, { rate: utterance.rate })
+		let origin = 0
+		let started = false
 		let raf = 0
-		const t0 = performance.now()
 		const animate = () => {
-			const t = (performance.now() - t0) / 1000
-			// Simulasi gerakan mulut per suku kata (vokal-konsonan bergantian)
-			const syllable = 0.5 + 0.5 * Math.sin(t * 10.5)
-			const accent = 0.6 + 0.4 * Math.sin(t * 2.5 + 0.8)
-			const level = Math.max(0, Math.min(1, syllable * accent))
-			onLevel?.(level, 0.4 + 0.28 * Math.sin(t * 4.2))
+			if (!started) {
+				raf = requestAnimationFrame(animate)
+				return
+			}
+			const t = (performance.now() - origin) / 1000
+			const p = track.at(t)
+			if (onMouth) onMouth(p)
+			else onLevel?.(p.jaw, 0.5 + p.wide * 0.5 - p.round * 0.5)
 			raf = requestAnimationFrame(animate)
 		}
 		raf = requestAnimationFrame(animate)
 
+		utterance.onstart = () => {
+			started = true
+			origin = performance.now()
+		}
+		utterance.onboundary = (event) => {
+			if (event.name && event.name !== "word") return
+			const t0 = track.timeOfChar(event.charIndex || 0)
+			if (t0 !== null) origin = performance.now() - t0 * 1000
+		}
 		const done = () => {
 			cancelAnimationFrame(raf)
+			onMouth?.(null)
 			onLevel?.(0, 0.5)
 			resolve()
 		}

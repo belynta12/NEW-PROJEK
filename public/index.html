@@ -83,16 +83,14 @@
 				</div>
 
 				<div class="group">
-					<h3>2. Kalibrasi wajah</h3>
-					<p class="hint" id="calibHint">Tandai mulut dan kedua mata supaya animasi pas.</p>
+					<h3>2. Wajah &amp; gerakan</h3>
+					<p class="hint" id="calibHint">Wajah dideteksi otomatis (478 titik) saat foto dipasang. Kalibrasi manual hanya bila deteksi gagal.</p>
 					<div class="row">
-						<button class="btn" id="calibrateBtn" type="button">Mulai kalibrasi</button>
-						<button class="btn btn-ghost" id="resetRig" type="button">Reset</button>
+						<button class="btn" id="detectBtn" type="button">Deteksi ulang wajah</button>
+						<button class="btn btn-ghost" id="calibrateBtn" type="button">Kalibrasi manual</button>
 					</div>
-					<label class="slider">Lebar mulut <input type="range" id="mouthW" min="40" max="260" value="120" /></label>
-					<label class="slider">Tinggi mulut <input type="range" id="mouthH" min="20" max="160" value="60" /></label>
-					<label class="slider">Gerak badan <input type="range" id="bodyMotion" min="0" max="200" value="100" /></label>
-					<label class="slider">Kekuatan lipsync <input type="range" id="lipGain" min="40" max="220" value="110" /></label>
+					<label class="slider">Bukaan mulut <input type="range" id="lipGain" min="40" max="160" value="100" /></label>
+					<label class="slider">Gerak kepala &amp; badan <input type="range" id="bodyMotion" min="0" max="200" value="100" /></label>
 				</div>
 
 				<div class="group">
@@ -130,11 +128,11 @@
 
 		<!-- Overlay kalibrasi -->
 		<div class="calib" id="calibOverlay" hidden>
-			<p id="calibStep">Klik tengah MULUT pada foto</p>
+			<p id="calibStep">Klik tengah MULUT (garis pertemuan bibir)</p>
 			<button class="btn btn-ghost btn-sm" id="calibCancel" type="button">Batal</button>
 		</div>
 
 		<audio id="player" hidden></audio>
-		<script type="module" src="js/app.js?v=2070"></script>
+		<script type="module" src="js/app.js?v=3000"></script>
 	</body>
 </html>

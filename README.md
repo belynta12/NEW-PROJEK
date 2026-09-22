@@ -7,8 +7,9 @@ bicara ke mikrofon, lalu:
 suara pengunjung -> teks (STT) -> jawaban AI (LLM) -> suara Anda (TTS) -> foto bergerak (mulut, kepala, badan)
 ```
 
-Semua berjalan dari satu server Node.js **tanpa dependency npm sama sekali**
-(hanya modul bawaan Node), jadi ringan dan bisa jalan di PC/VPS kecil.
+Semua berjalan dari satu server Node.js ringan (dependency npm hanya
+`msedge-tts` untuk suara gratis dan `simli-client` opsional), jadi bisa jalan
+di PC/VPS kecil. Animasi wajah sepenuhnya di browser, tanpa biaya API.
 
 ---
 
@@ -88,30 +89,54 @@ Alternatif lebih murah: `TTS_PROVIDER=fishaudio` (juga bisa kloning suara).
 ## 4. Memakai FOTO ANDA
 
 1. Buka web -> **Pengaturan** -> **Unggah foto**.
-2. Ikuti kalibrasi: klik **mulut**, lalu **mata kiri**, lalu **mata kanan**.
-3. Rapikan dengan slider *Lebar mulut*, *Tinggi mulut*, *Gerak badan*,
-   *Kekuatan lipsync*. Pengaturan tersimpan otomatis di browser.
+2. Wajah **dideteksi otomatis** (478 titik wajah, MediaPipe, berjalan di browser,
+   gratis). Hasilnya di-cache di browser sehingga kunjungan berikutnya instan.
+3. Bila deteksi gagal (wajah terlalu kecil / menoleh), klik **Kalibrasi manual**:
+   klik garis pertemuan bibir, pupil mata kiri, pupil mata kanan.
+4. Setel slider *Bukaan mulut* dan *Gerak kepala & badan*. Tersimpan otomatis.
 
 **Foto yang bagus:** setengah badan, wajah lurus ke kamera, mulut tertutup,
-pencahayaan rata, latar rapi, resolusi minimal 800 px lebar.
+pencahayaan rata, latar rapi, wajah minimal ~150 px lebar (idealnya foto
+800 px lebar atau lebih). Foto seluruh badan dengan wajah kecil tidak akan
+terdeteksi dan hasilnya kurang bagus.
 
-Cara kerja animasi (`public/js/puppet.js`): foto digambar ulang tiap frame di
-canvas. Bagian mulut diregangkan mengikuti amplitudo suara (rahang turun +
-rongga mulut), kepala diputar/dianggukkan halus, badan diberi efek napas dan
-goyangan, mata berkedip berkala. Tidak ada biaya API sama sekali.
+### Cara kerja animasi (mode `puppet`, gratis)
+
+Bukan lagi "tempel patch mulut": foto dipecah menjadi ~1.100 segitiga dari 478
+titik wajah dan dirender ulang tiap frame dengan WebGL (`public/js/mesh.js`,
+`warp.js`, `puppet.js`), sehingga bentuk wajah benar-benar berubah:
+
+- **Rahang & bibir**: rahang turun (dagu ikut), bibir membentuk viseme
+  a / i / u / e / o, bilabial (m, b, p) menutup, f/v bibir bawah masuk,
+  s/z gigi rapat. Rongga mulut, gigi atas/bawah, dan lidah digambar di dalam
+  celah bibir dengan warna yang diambil dari foto.
+- **Lipsync dari teks + audio** (`public/js/lipsync.js`): teks kalimat diubah
+  menjadi urutan fonem, lalu disejajarkan dengan puncak energi audio TTS
+  (Fish Audio / ElevenLabs / Edge). Mulut mengikuti vokal yang benar-benar
+  diucapkan, bukan sekadar volume.
+- **Mata**: kelopak benar-benar menutup saat kedip (dengan kedip ganda sesekali),
+  sakadik/arah pandang bergeser natural, melirik ke atas saat "berpikir".
+- **Kepala**: gerak mikro 3D semu (paralaks dari kedalaman tiap titik wajah),
+  angguk halus saat menekankan kata, miring kepala saat mendengarkan.
+  Kepala bergerak terpisah dari badan, badan bernapas.
+- **Ekspresi**: alis naik saat penekanan/mendengar, senyum tipis saat diam dan
+  senyum kecil setelah selesai menjawab.
+
+Tanpa WebGL, otomatis kembali ke mode 2D sederhana (`puppet-legacy.js`).
 
 ---
 
 ## 5. Kalau ingin gerakan sekelas HeyGen
 
-Mode puppet gratis sudah terlihat hidup, tapi gerak bibirnya perkiraan dari
-volume suara. Untuk lipsync sinematik:
+Mode puppet gratis sudah bergerak seperti manusia (mesh wajah + lipsync viseme).
+Kalau ingin video AI generatif penuh (rambut/kain ikut bergerak), ada mode berbayar:
 
 | Mode | Isi `.env` | Catatan |
 | --- | --- | --- |
-| `puppet` (default) | - | Gratis, real-time, jalan di semua browser |
-| `heygen` | `AVATAR_MODE=heygen`, `HEYGEN_API_KEY`, `HEYGEN_AVATAR_ID` | Video streaming real-time. Buat dulu *Photo Avatar* dari foto Anda di dashboard HeyGen |
-| `did` | `AVATAR_MODE=did`, `DID_API_KEY`, `DID_SOURCE_URL` | Render video per jawaban; foto harus punya URL publik |
+| `puppet` (default) | - | Gratis, real-time, jalan di semua browser modern (WebGL) |
+| `simli` | `AVATAR_MODE=simli`, `SIMLI_API_KEY`, `SIMLI_FACE_ID` | Streaming WebRTC real-time, ada tier gratis developer |
+| `did` | `AVATAR_MODE=did`, `DID_API_KEY`, `DID_SOURCE_URL` | Streaming WebRTC dari SATU foto; foto harus punya URL publik |
+| `heygen` | - | Belum tersedia di versi web ini (butuh SDK HeyGen); server sudah menyediakan endpoint token |
 
 Perbandingan harga lengkap: `docs/BIAYA-API.md`.
 
@@ -151,9 +176,16 @@ avatar-ai-lifetime/
     index.html            antarmuka web
     styles.css            tampilan (mendukung mode gelap)
     js/app.js             alur percakapan, streaming jawaban, antrean suara
-    js/puppet.js          mesin animasi foto (mulut, kepala, badan, kedip)
-    js/audio.js           mikrofon, deteksi diam, pemutar + pengukur amplitudo
-    js/heygen.js          mode avatar streaming (opsional)
+    js/puppet.js          mesin animasi foto v2 (perilaku hidup, rongga mulut, gigi)
+    js/mesh.js            rig wajah, triangulasi Delaunay, bobot & deformasi mesh
+    js/warp.js            perender mesh WebGL
+    js/lipsync.js         viseme dari teks + amplop audio
+    js/face-detect.js     deteksi 478 titik wajah (MediaPipe) + cache
+    js/puppet-legacy.js   mode 2D cadangan bila WebGL tidak ada
+    js/audio.js           mikrofon, deteksi diam, pemutar WebAudio + lipsync
+    js/simli.js, did.js   mode avatar streaming berbayar (opsional)
+    assets/avatar.landmarks.json  landmark foto contoh (start instan)
+  scripts/qa/             render uji offline (Node, tanpa browser)
   knowledge/              data pribadi avatar (markdown)
   scripts/
     clone-voice.js        kloning suara dari terminal
@@ -205,8 +237,10 @@ cukup dan jauh lebih ringan.
 | --- | --- |
 | Mikrofon tidak muncul | Buka lewat `localhost` atau HTTPS. Izinkan mikrofon di browser |
 | "API key LLM belum diisi" | Isi `GROQ_API_KEY` di `.env`, lalu restart |
-| Mulut tidak pas | Ulangi kalibrasi, lalu setel slider lebar/tinggi mulut |
-| Mulut bergerak berlebihan | Turunkan *Kekuatan lipsync* |
+| "Wajah tidak terdeteksi" | Pakai foto setengah badan menghadap kamera (wajah cukup besar). Atau klik *Kalibrasi manual* |
+| Deteksi wajah lama / gagal memuat | Butuh internet untuk mengunduh model (~4 MB, sekali). Bisa diarahkan ke salinan lokal lewat `VISION_TASKS_URL` / `VISION_MODEL_URL` |
+| Mulut terbuka terlalu lebar / kecil | Setel slider *Bukaan mulut* |
+| Gerak kepala terlalu banyak | Turunkan *Gerak kepala & badan* |
 | Suara balasan bukan suara saya | `TTS_PROVIDER` masih `browser`, atau `ELEVENLABS_VOICE_ID` kosong |
 | Pengenalan suara meleset | Pakai `STT_PROVIDER=groq` (Whisper) untuk akurasi jauh lebih baik |
 | Avatar memotong ucapan sendiri | Matikan *Mode ngobrol otomatis*, gunakan tekan-tahan |
