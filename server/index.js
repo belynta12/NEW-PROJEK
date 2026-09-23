@@ -17,8 +17,25 @@ const PUBLIC_DIR = path.join(ROOT, "public")
 const UPLOAD_DIR = path.join(ROOT, "uploads")
 const CACHE_DIR = path.join(ROOT, "cache", "tts")
 const KNOWLEDGE_DIR = path.join(ROOT, "knowledge")
+const ENV_FILE = path.join(ROOT, ".env")
 
-loadEnv(path.join(ROOT, ".env"))
+// Node terlalu lama -> pesan jelas, bukan error aneh
+const nodeMajor = Number(process.versions.node.split(".")[0])
+if (nodeMajor < 18) {
+	console.error(`\n  Node.js ${process.versions.node} terlalu lama. Butuh Node 18+ (disarankan 20 LTS): https://nodejs.org\n`)
+	process.exit(1)
+}
+// .env belum ada -> buat dari .env.example supaya langsung jalan (mode demo)
+if (!fs.existsSync(ENV_FILE) && fs.existsSync(path.join(ROOT, ".env.example"))) {
+	try {
+		fs.copyFileSync(path.join(ROOT, ".env.example"), ENV_FILE)
+		console.log("  File .env belum ada -> dibuat dari .env.example (mode demo). Isi API key di .env lalu restart.")
+	} catch {
+		/* abaikan */
+	}
+}
+
+loadEnv(ENV_FILE)
 const config = getConfig(true)
 fs.mkdirSync(UPLOAD_DIR, { recursive: true })
 tts.setCacheDir(CACHE_DIR)
@@ -362,14 +379,27 @@ const server = http.createServer(async (req, res) => {
 	serveStatic(res, target)
 })
 
-server.listen(config.port, () => {
-	const line = (label, value) => console.log(`  ${label.padEnd(9)} ${value}`)
-	console.log("\n  AVATAR AI LIFETIME siap.")
-	console.log(`  http://localhost:${config.port}\n`)
-	line("Otak", `${config.llm.label} (${config.llm.model}) ${llm.hasApiKey() ? "OK (Online)" : "Mode Demo (Siap)"}`)
-	line("Dengar", config.stt.label)
-	line("Suara", config.tts.label)
-	line("Avatar", config.avatar.mode)
-	line("Data", `${kb.files} file, ${kb.chunks} potongan pengetahuan`)
-	console.log("")
-})
+function listen(port, attempt = 0) {
+	server.once("error", (error) => {
+		if (error.code === "EADDRINUSE" && attempt < 5) {
+			console.warn(`  Port ${port} sedang dipakai (server lain masih jalan?), mencoba port ${port + 1}...`)
+			setTimeout(() => listen(port + 1, attempt + 1), 200)
+			return
+		}
+		if (error.code === "EACCES") console.error(`  Tidak boleh memakai port ${port}. Ganti PORT di .env (misal 8787).`)
+		else console.error("  Server gagal dijalankan:", error.message)
+		process.exit(1)
+	})
+	server.listen(port, () => {
+		const line = (label, value) => console.log(`  ${label.padEnd(9)} ${value}`)
+		console.log("\n  AVATAR AI LIFETIME siap.")
+		console.log(`  Buka di browser:  http://localhost:${port}\n`)
+		line("Otak", `${config.llm.label} (${config.llm.model}) ${llm.hasApiKey() ? "OK (Online)" : "Mode Demo (Siap)"}`)
+		line("Dengar", config.stt.label)
+		line("Suara", config.tts.label)
+		line("Avatar", config.avatar.mode)
+		line("Data", `${kb.files} file, ${kb.chunks} potongan pengetahuan`)
+		console.log("\n  Biarkan jendela ini terbuka. Tekan Ctrl+C untuk berhenti.\n")
+	})
+}
+listen(config.port)

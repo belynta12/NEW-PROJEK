@@ -15,15 +15,26 @@ di PC/VPS kecil. Animasi wajah sepenuhnya di browser, tanpa biaya API.
 
 ## 1. Jalankan dalam 3 menit
 
+**Windows:** klik dua kali **`start.bat`** (memasang dependency, membuat `.env`, menjalankan
+server, dan menampilkan pesan error bila ada). **macOS/Linux:** `./start.sh`.
+
+Atau manual:
+
 ```bash
-# butuh Node.js 20 atau lebih baru
+# butuh Node.js 20 atau lebih baru (https://nodejs.org)
 node -v
 
+npm install
 cp .env.example .env
 npm start
 ```
 
-Buka **http://localhost:8787**
+Buka alamat yang tercetak di terminal, biasanya **http://localhost:8787** (kalau port itu
+sedang dipakai, server otomatis pindah ke 8788 dan mencetak alamatnya). Biarkan jendela
+terminal tetap terbuka selama dipakai.
+
+Kalau browser menampilkan "localhost refused to connect", servernya belum jalan: jalankan
+`npm run doctor` untuk diagnosa (versi Node, dependency, .env, port) dan kirim hasilnya.
 
 Tanpa mengisi API key apa pun, web sudah bisa dipakai dalam **mode demo**:
 pengenalan suara dan suara balasan memakai fitur gratis bawaan Chrome/Edge,

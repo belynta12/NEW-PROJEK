@@ -2,7 +2,18 @@ import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { getConfig } from "../config.js"
-import { MsEdgeTTS, OUTPUT_FORMAT } from "msedge-tts"
+
+// msedge-tts dimuat saat dibutuhkan supaya server tetap jalan walau `npm install` belum dijalankan
+let edgeModule = null
+async function loadEdge() {
+	if (!edgeModule) {
+		edgeModule = import("msedge-tts").catch((error) => {
+			edgeModule = null
+			throw new Error("Paket msedge-tts belum terpasang. Jalankan `npm install` di folder proyek, atau ganti TTS_PROVIDER di .env. (" + error.message + ")")
+		})
+	}
+	return edgeModule
+}
 
 /** Teks -> audio dengan suara kloning Anda. */
 
@@ -24,6 +35,7 @@ function cacheKey(text, provider, voice, model) {
 }
 
 async function edgeTts(text, voice = "id-ID-ArdiNeural") {
+	const { MsEdgeTTS, OUTPUT_FORMAT } = await loadEdge()
 	const tts = new MsEdgeTTS()
 	await tts.setMetadata(voice, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3)
 	return new Promise((resolve, reject) => {
