@@ -1,140 +1,339 @@
 /**
- * Simli WebRTC Client.
- * Mengalirkan video avatar manusia nyata secara real-time via WebRTC,
- * disinkronkan otomatis dengan audio (Fish Audio / Edge TTS).
+ * Simli WebRTC Client (simli-client 3.x, dibundel di simli-bundle.js).
+ *
+ * Mengalirkan video avatar Simli secara real-time via WebRTC (transport livekit).
+ * Audio TTS (Fish Audio / ElevenLabs / Edge) dikirim sebagai PCM16 16 kHz mono;
+ * SUARA DIPUTAR OLEH SIMLI (ikut di stream video) supaya bibir dan suara selalu
+ * sinkron - bukan diputar lokal (yang membuat suara mendahului gambar).
+ *
+ * Fitur: sambung ulang otomatis saat sesi berakhir (idle timeout), event
+ * speaking/silent untuk menunggu ucapan selesai, ClearBuffer untuk interupsi,
+ * resampling berkualitas lewat OfflineAudioContext.
  */
 
 import { SimliClient } from "./simli-bundle.js"
+import { audioContext } from "./audio.js"
 
 let client = null
-let isReady = false
-let audioCtx = null
+let videoEl = null
+let audioEl = null
+let callbacks = {}
+let connecting = null
+let connected = false
+let speaking = false
+let sessionInfo = null // { faceId, maxIdleTime, maxSessionLength, model }
+let sessionStartedAt = 0
+let lastError = null
+let silentWaiters = []
 
 export function isSimliReady() {
-	return isReady
+	return connected && Boolean(client)
 }
 
-/**
- * Konversi audio blob (MP3/WAV) menjadi 16kHz PCM16 Uint8Array
- * sesuai format input yang diminta Simli.
- */
-async function blobToPcm16(blob) {
-	if (!audioCtx) {
-		audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 })
+export function getSimliState() {
+	return {
+		connected,
+		speaking,
+		faceId: sessionInfo ? sessionInfo.faceId : null,
+		model: sessionInfo ? sessionInfo.model : null,
+		sessionSeconds: sessionStartedAt ? Math.round((performance.now() - sessionStartedAt) / 1000) : 0,
+		lastError,
 	}
-	if (audioCtx.state === "suspended") {
-		await audioCtx.resume()
-	}
-
-	const arrayBuffer = await blob.arrayBuffer()
-	const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer)
-	
-	const input = audioBuffer.getChannelData(0)
-	const ratio = audioBuffer.sampleRate / 16000
-	const outputLength = Math.round(input.length / ratio)
-	const pcm16 = new Int16Array(outputLength)
-
-	for (let i = 0; i < outputLength; i++) {
-		const srcIdx = Math.floor(i * ratio)
-		const s = Math.max(-1, Math.min(1, input[srcIdx] || 0))
-		pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
-	}
-
-	return new Uint8Array(pcm16.buffer)
 }
 
-/**
- * Memulai sesi streaming Simli WebRTC.
- */
-export async function startSimli({ videoEl, audioEl, onTrack, onError, onStatus }) {
-	onStatus?.("Menghubungkan avatar Simli (WebRTC)...")
+function emitStatus(message) {
+	console.log("[simli]", message)
+	callbacks.onStatus?.(message)
+}
 
+function ensureAudioElement() {
+	if (audioEl) return audioEl
+	audioEl = document.createElement("audio")
+	audioEl.autoplay = true
+	audioEl.playsInline = true
+	audioEl.setAttribute("playsinline", "")
+	audioEl.style.display = "none"
+	document.body.appendChild(audioEl)
+	return audioEl
+}
+
+/** Panggil setelah interaksi pengguna supaya autoplay audio tidak diblokir. */
+export function resumeSimliAudio() {
 	try {
-		// 1. Ambil session token dari server
-		const res = await fetch("/api/avatar/simli/token", { method: "POST" })
-		if (!res.ok) {
-			const err = await res.json().catch(() => ({}))
-			throw new Error(err.error || `HTTP ${res.status}`)
+		if (audioEl) {
+			audioEl.muted = false
+			audioEl.play().catch(() => {})
 		}
-		const { session_token } = await res.json()
-
-		// 2. Pastikan elemen video siap & terlihat agar WebRTC frame renderer aktif
-		videoEl.hidden = false
-		videoEl.style.display = "block"
-		videoEl.autoplay = true
-		videoEl.playsInline = true
-		videoEl.muted = false
-
-		// Elemen audio internal Simli dimatikan suaranya agar tidak bentrok dengan speaker lokal
-		const internalAudio = new Audio()
-		internalAudio.muted = true
-
-		// 3. Buat instance SimliClient
-		client = new SimliClient(
-			session_token,
-			videoEl,
-			internalAudio,
-			[{ urls: ["stun:stun.l.google.com:19302"] }],
-			undefined, // logLevel
-			"livekit", // transport
-			"websockets" // signaling
-		)
-
-		client.on("start", () => {
-			console.log("[Simli] WebRTC Video Started")
-			isReady = true
-			onStatus?.("Avatar Simli siap! Siap ngobrol.")
-			onTrack?.()
-		})
-
-		client.on("failed", (err) => {
-			console.error("[Simli] Connection failed:", err)
-			isReady = false
-			onError?.(err)
-		})
-
-		client.on("disconnected", () => {
-			console.warn("[Simli] Disconnected")
-			isReady = false
-			onStatus?.("Simli terputus.")
-		})
-
-		await client.start()
-		isReady = true
-		onTrack?.()
-		return client
-	} catch (err) {
-		console.error("[Simli] Gagal start:", err)
-		isReady = false
-		onError?.(err)
-		throw err
+		if (videoEl) videoEl.play().catch(() => {})
+	} catch {
+		/* abaikan */
 	}
 }
 
 /**
- * Kirimkan audio TTS ke Simli untuk digerakkan bibirnya secara real-time.
+ * Memulai sesi streaming Simli WebRTC. Aman dipanggil berulang.
+ * @param {{videoEl?:HTMLVideoElement,onTrack?:Function,onError?:Function,onStatus?:Function,onDisconnected?:Function,onSpeaking?:Function}} options
  */
-export async function speakSimli(audioBlob) {
-	if (!client) {
-		throw new Error("Simli client belum aktif")
+export async function startSimli(options = {}) {
+	if (options.videoEl) videoEl = options.videoEl
+	callbacks = {
+		onTrack: options.onTrack || callbacks.onTrack,
+		onError: options.onError || callbacks.onError,
+		onStatus: options.onStatus || callbacks.onStatus,
+		onDisconnected: options.onDisconnected || callbacks.onDisconnected,
+		onSpeaking: options.onSpeaking || callbacks.onSpeaking,
 	}
-
-	const pcm16Data = await blobToPcm16(audioBlob)
-
-	// Kirim dalam chunk 3000 bytes (~93 ms audio) agar streaming halus
-	const CHUNK_SIZE = 3000
-	for (let offset = 0; offset < pcm16Data.length; offset += CHUNK_SIZE) {
-		const chunk = pcm16Data.subarray(offset, Math.min(offset + CHUNK_SIZE, pcm16Data.length))
-		client.sendAudioData(chunk)
-	}
+	if (connecting) return connecting
+	if (isSimliReady()) return client
+	connecting = connect()
+		.catch((error) => {
+			lastError = error.message || String(error)
+			callbacks.onError?.(error)
+			throw error
+		})
+		.finally(() => {
+			connecting = null
+		})
+	return connecting
 }
 
-export function stopSimli() {
+async function connect() {
+	await teardown(false)
+	emitStatus("Menghubungkan avatar Simli (WebRTC)...")
+	const t0 = performance.now()
+
+	// 1. Ambil session token dari server (API key tetap di server)
+	const res = await fetch("/api/avatar/simli/token", { method: "POST" })
+	if (!res.ok) {
+		const err = await res.json().catch(() => ({}))
+		throw new Error(err.error || `HTTP ${res.status}`)
+	}
+	const data = await res.json()
+	sessionInfo = { faceId: data.faceId, maxIdleTime: data.maxIdleTime, maxSessionLength: data.maxSessionLength, model: data.model || null }
+
+	// 2. Elemen video (gambar) + audio (suara dari Simli). Video dibisukan agar tidak dobel.
+	if (!videoEl) throw new Error("Elemen video belum ada")
+	videoEl.hidden = false
+	videoEl.autoplay = true
+	videoEl.playsInline = true
+	videoEl.muted = true
+	const audio = ensureAudioElement()
+	audio.muted = false
+
+	// 3. Buat SimliClient (transport livekit: tidak butuh ICE server sendiri)
+	const c = new SimliClient(data.session_token, videoEl, audio, null, undefined, "livekit", "websockets")
+	client = c
+	const guard = (fn) => (...args) => {
+		if (client === c) fn(...args)
+	}
+	const safeOn = (event, fn) => {
+		try {
+			c.on(event, guard(fn))
+		} catch {
+			/* nama event tidak dikenal versi ini */
+		}
+	}
+	safeOn("start", () => {
+		connected = true
+		emitStatus("Video Simli mulai")
+	})
+	safeOn("connected", () => {
+		connected = true
+	})
+	safeOn("stop", () => handleDisconnect("sesi ditutup server (idle/limit)"))
+	safeOn("disconnected", () => handleDisconnect("terputus"))
+	safeOn("failed", (detail) => handleDisconnect("gagal: " + (detail || "")))
+	safeOn("error", (detail) => {
+		lastError = String(detail || "error")
+		emitStatus("Error: " + lastError)
+		if (!connected) handleDisconnect("error saat menyambung")
+	})
+	safeOn("startup_error", (message) => {
+		lastError = String(message || "startup error")
+		handleDisconnect("startup error: " + lastError)
+	})
+	safeOn("speaking", () => {
+		speaking = true
+		callbacks.onSpeaking?.(true)
+	})
+	safeOn("silent", () => {
+		speaking = false
+		callbacks.onSpeaking?.(false)
+		const waiters = silentWaiters
+		silentWaiters = []
+		for (const w of waiters) w()
+	})
+
+	await c.start()
+	if (client !== c) throw new Error("Sesi Simli dibatalkan")
+	connected = true
+	sessionStartedAt = performance.now()
+	lastError = null
+	emitStatus(`Simli tersambung dalam ${((performance.now() - t0) / 1000).toFixed(1)} s (wajah ${sessionInfo.faceId})`)
+	callbacks.onTrack?.(getSimliState())
+	return c
+}
+
+function handleDisconnect(reason) {
+	if (!connected && !client) return
+	connected = false
+	speaking = false
+	const waiters = silentWaiters
+	silentWaiters = []
+	for (const w of waiters) w()
+	emitStatus("Simli terputus: " + reason)
+	callbacks.onDisconnected?.(reason)
+}
+
+async function teardown(notify) {
+	const c = client
+	client = null
+	connected = false
+	speaking = false
+	const waiters = silentWaiters
+	silentWaiters = []
+	for (const w of waiters) w()
+	if (c) {
+		try {
+			await c.stop()
+		} catch {
+			/* abaikan */
+		}
+	}
+	if (notify) callbacks.onDisconnected?.("dihentikan")
+}
+
+/* ----------------------------- audio -> PCM ----------------------------- */
+
+function floatToPcm16(float32) {
+	const out = new Int16Array(float32.length)
+	for (let i = 0; i < float32.length; i++) {
+		const s = Math.max(-1, Math.min(1, float32[i]))
+		out[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+	}
+	return new Uint8Array(out.buffer)
+}
+
+/** AudioBuffer (rate apa pun) -> PCM16 mono 16 kHz. */
+async function audioBufferToPcm16k(buffer) {
+	const targetRate = 16000
+	const frames = Math.max(1, Math.ceil(buffer.duration * targetRate))
+	if (typeof OfflineAudioContext !== "undefined") {
+		try {
+			const offline = new OfflineAudioContext(1, frames, targetRate)
+			const source = offline.createBufferSource()
+			source.buffer = buffer
+			source.connect(offline.destination)
+			source.start(0)
+			const rendered = await offline.startRendering()
+			return floatToPcm16(rendered.getChannelData(0))
+		} catch (error) {
+			console.warn("[simli] OfflineAudioContext gagal, pakai resampling linear:", error?.message || error)
+		}
+	}
+	// cadangan: mono + interpolasi linear
+	const ch = buffer.numberOfChannels
+	const mono = new Float32Array(buffer.length)
+	for (let c = 0; c < ch; c++) {
+		const d = buffer.getChannelData(c)
+		for (let i = 0; i < d.length; i++) mono[i] += d[i] / ch
+	}
+	const ratio = buffer.sampleRate / targetRate
+	const out = new Float32Array(frames)
+	for (let i = 0; i < frames; i++) {
+		const pos = i * ratio
+		const i0 = Math.floor(pos)
+		const i1 = Math.min(mono.length - 1, i0 + 1)
+		const t = pos - i0
+		out[i] = (mono[i0] || 0) * (1 - t) + (mono[i1] || 0) * t
+	}
+	return floatToPcm16(out)
+}
+
+async function toPcm16k(source) {
+	if (source && source.buffer && typeof source.buffer.getChannelData === "function") return audioBufferToPcm16k(source.buffer)
+	const blob = source instanceof Blob ? source : source && source.blob
+	if (!blob) throw new Error("Sumber audio tidak dikenal")
+	const arrayBuffer = await blob.arrayBuffer()
+	const decoded = await audioContext().decodeAudioData(arrayBuffer)
+	return audioBufferToPcm16k(decoded)
+}
+
+/* ------------------------------- bicara -------------------------------- */
+
+function waitSpeechEnd(seconds) {
+	const t0 = performance.now()
+	const minMs = Math.max(200, seconds * 850)
+	const maxMs = (seconds + 2.5) * 1000
+	return new Promise((resolve) => {
+		let done = false
+		const finish = () => {
+			if (done) return
+			done = true
+			clearTimeout(timer)
+			resolve()
+		}
+		const timer = setTimeout(finish, maxMs)
+		const onSilent = () => {
+			// "silent" terlalu awal (dari ucapan sebelumnya) diabaikan
+			if (performance.now() - t0 >= minMs) finish()
+			else silentWaiters.push(onSilent)
+		}
+		silentWaiters.push(onSilent)
+	})
+}
+
+/**
+ * Kirim audio TTS ke Simli (bibir bergerak + suara diputar Simli), lalu tunggu selesai.
+ * @param {{buffer?:AudioBuffer, blob?:Blob}|Blob} source  item hasil Speaker.prepare() atau Blob
+ * @param {{duration?:number}} opts
+ */
+export async function speakSimli(source, opts = {}) {
+	if (!isSimliReady()) {
+		emitStatus("Menyambung ulang sebelum bicara...")
+		await startSimli({})
+	}
+	resumeSimliAudio()
+	const pcm = await toPcm16k(source)
+	const seconds = Number(opts.duration) || pcm.byteLength / 2 / 16000
+	if (!isSimliReady()) throw new Error("Simli belum tersambung")
+	// kirim dalam potongan ~187 ms (6000 byte) - Simli menyangga dan memutar berurutan
+	const CHUNK = 6000
+	for (let offset = 0; offset < pcm.byteLength; offset += CHUNK) {
+		client.sendAudioData(pcm.subarray(offset, Math.min(offset + CHUNK, pcm.byteLength)))
+	}
+	await waitSpeechEnd(seconds)
+	return { seconds }
+}
+
+/** Hentikan ucapan yang sedang berjalan (kosongkan buffer audio Simli). */
+export function clearSimli() {
 	if (client) {
 		try {
-			client.stop()
-		} catch {}
-		client = null
-		isReady = false
+			client.ClearBuffer()
+		} catch {
+			/* abaikan */
+		}
 	}
+	speaking = false
+	const waiters = silentWaiters
+	silentWaiters = []
+	for (const w of waiters) w()
+}
+
+export async function stopSimli() {
+	await teardown(true)
+	if (videoEl) videoEl.hidden = true
+}
+
+if (typeof window !== "undefined") {
+	window.addEventListener("pagehide", () => {
+		if (client) {
+			try {
+				client.stop()
+			} catch {
+				/* abaikan */
+			}
+		}
+	})
 }

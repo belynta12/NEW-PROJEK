@@ -409,22 +409,46 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 /* -------------------------------- Simli --------------------------------- */
 
-/** Simli: dapatkan session token untuk WebRTC streaming di browser. */
+/** Simli: dapatkan session token untuk WebRTC streaming di browser (API key tetap di server). */
 export async function simliSessionToken() {
 	const { avatar } = getConfig()
-	const apiKey = avatar.simli?.apiKey || process.env.SIMLI_API_KEY
-	if (!apiKey) throw new Error("SIMLI_API_KEY belum diisi di .env")
-	const faceId = avatar.simli?.faceId || process.env.SIMLI_FACE_ID || "804c347a-26c9-4dcf-bb49-13df4bed61e8"
-
+	const cfg = avatar.simli || {}
+	const apiKey = cfg.apiKey || process.env.SIMLI_API_KEY
+	if (!apiKey) throw new Error("SIMLI_API_KEY belum diisi di .env (daftar gratis di app.simli.com)")
+	const faceId = cfg.faceId || process.env.SIMLI_FACE_ID
+	if (!faceId) throw new Error("SIMLI_FACE_ID belum diisi")
+	const clampNum = (v, a, b, d) => (Number.isFinite(Number(v)) ? Math.max(a, Math.min(b, Number(v))) : d)
+	const body = {
+		faceId,
+		handleSilence: true, // Simli membuat animasi diam saat tidak ada audio
+		maxSessionLength: clampNum(cfg.maxSession, 60, 3600, 900),
+		maxIdleTime: clampNum(cfg.maxIdle, 15, 300, 90),
+		audioInputFormat: "pcm16",
+	}
 	const response = await fetch("https://api.simli.ai/compose/token", {
 		method: "POST",
-		headers: { "Content-Type": "application/json", "x-simli-api-key": apiKey },
-		body: JSON.stringify({ faceId, handleSilence: true, maxSessionLength: 600, maxIdleTime: 120 }),
+		headers: { "content-type": "application/json", "x-simli-api-key": apiKey },
+		body: JSON.stringify(body),
 	})
+	const text = await response.text().catch(() => "")
 	if (!response.ok) {
-		const err = await response.text()
-		throw new Error(`Simli token error ${response.status}: ${err}`)
+		const hint = response.status === 401 || response.status === 403 ? " (API key salah/kedaluwarsa?)" : ""
+		throw new Error(`Simli token error ${response.status}${hint}: ${text.slice(0, 300)}`)
 	}
-	const data = await response.json()
-	return { session_token: data.session_token, faceId }
+	let data = {}
+	try {
+		data = JSON.parse(text)
+	} catch {
+		throw new Error("Simli mengembalikan jawaban tidak dikenal: " + text.slice(0, 200))
+	}
+	if (!data.session_token || /FAIL/i.test(String(data.session_token))) {
+		throw new Error("Simli menolak sesi: " + (data.detail || text.slice(0, 200)) + " (cek SIMLI_FACE_ID & kuota menit)")
+	}
+	return {
+		session_token: data.session_token,
+		faceId,
+		preset: Boolean(cfg.preset),
+		maxSessionLength: body.maxSessionLength,
+		maxIdleTime: body.maxIdleTime,
+	}
 }

@@ -72,6 +72,9 @@ const TTS_PRESETS = {
 	openai: { label: "OpenAI TTS", keyEnv: "OPENAI_API_KEY" },
 }
 
+// Wajah contoh Simli ("Mark") bila SIMLI_FACE_ID kosong. Buat wajah sendiri: npm run simli-face -- foto.jpg
+const SIMLI_PRESET_FACE = "804c347a-26c9-4dcf-bb49-13df4bed61e8"
+
 const num = (value, fallback) => {
 	const parsed = Number(value)
 	return Number.isFinite(parsed) ? parsed : fallback
@@ -138,7 +141,12 @@ function build() {
 			mode: str(process.env.AVATAR_MODE, "puppet").toLowerCase(),
 			simli: {
 				apiKey: str(process.env.SIMLI_API_KEY),
-				faceId: str(process.env.SIMLI_FACE_ID, "804c347a-26c9-4dcf-bb49-13df4bed61e8"),
+				faceId: str(process.env.SIMLI_FACE_ID, SIMLI_PRESET_FACE),
+				preset: !str(process.env.SIMLI_FACE_ID),
+				// sesi Simli dihitung per menit tersambung (termasuk saat diam):
+				// idle pendek = hemat kuota; sesi tersambung lagi otomatis saat pengguna bertanya
+				maxSession: num(process.env.SIMLI_MAX_SESSION, 900),
+				maxIdle: num(process.env.SIMLI_MAX_IDLE, 90),
 			},
 			heygen: {
 				apiKey: str(process.env.HEYGEN_API_KEY),
@@ -231,6 +239,13 @@ export function publicConfig() {
 			hasSourceUrl: Boolean(c.avatar.did.sourceUrl),
 		},
 		simliReady: Boolean(c.avatar.simli.apiKey),
+		simli: {
+			ready: Boolean(c.avatar.simli.apiKey),
+			faceId: c.avatar.simli.faceId,
+			preset: c.avatar.simli.preset,
+			maxIdle: c.avatar.simli.maxIdle,
+			maxSession: c.avatar.simli.maxSession,
+		},
 	}
 }
 

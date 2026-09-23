@@ -138,6 +138,37 @@ Kalau ingin video AI generatif penuh (rambut/kain ikut bergerak), ada mode berba
 | `did` | `AVATAR_MODE=did`, `DID_API_KEY` | Streaming WebRTC dari satu foto lewat *Agents Streams* (fluent idle) dengan cadangan API lama; foto lokal diunggah otomatis, `DID_SOURCE_URL` opsional |
 | `heygen` | - | Belum tersedia di versi web ini (butuh SDK HeyGen); server sudah menyediakan endpoint token |
 
+### Mode Simli: cara coba (10 menit)
+
+1. Daftar di **app.simli.com** (gratis: 50 menit/bulan + kredit $10), buka menu API key, salin.
+2. Isi `.env`:
+
+```env
+AVATAR_MODE=simli
+SIMLI_API_KEY=xxxxxxxx
+SIMLI_FACE_ID=            # kosong = wajah contoh Simli, untuk tes cepat
+TTS_PROVIDER=fishaudio    # suara Anda tetap dari Fish Audio
+```
+
+3. `npm start`, buka http://localhost:8787, tanya sesuatu. Video Simli tampil menggantikan
+   foto; suara diputar oleh Simli (sinkron dengan bibir), bukan lokal.
+4. Wajah dari foto Anda sendiri (model **Trinity**, lebih hidup):
+
+```bash
+npm run simli-face -- foto-saya.jpg "Nama Saya"
+```
+
+   Skrip membingkai ulang foto (syarat: JPG/PNG < 5 MB, minimal 512x512, satu orang menghadap
+   kamera, kepala >= 15% tinggi foto), mengirim ke Simli, memantau status tiap 20 detik, lalu
+   mencetak `SIMLI_FACE_ID` untuk `.env`. Pembuatan bisa beberapa menit sampai jam; cek lagi
+   dengan `npm run simli-face -- --status <face_id>` atau `--list`. Bisa juga lewat dashboard
+   (Create Avatar).
+
+Catatan biaya: Simli menghitung **menit tersambung** (termasuk saat diam). Karena itu sesi
+ditutup setelah idle `SIMLI_MAX_IDLE` detik (default 90) dan tersambung lagi otomatis (~1-2
+detik) saat Anda bertanya. Kalau Simli terputus atau gagal, avatar foto lokal + suara lokal
+langsung mengambil alih.
+
 ### Mode D-ID: cara kerja & optimasi
 
 - Server membuat **Agent** D-ID dari foto yang sedang dipasang (`POST /images` -> `POST /agents`,

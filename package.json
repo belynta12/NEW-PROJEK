@@ -11,7 +11,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "clone-voice": "node scripts/clone-voice.js",
-    "check": "node scripts/check-providers.js"
+    "check": "node scripts/check-providers.js",
+    "simli-face": "node scripts/simli-face.js"
   },
   "dependencies": {
     "msedge-tts": "^2.0.7",

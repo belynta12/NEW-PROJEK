@@ -494,7 +494,7 @@ function createSpeechQueue(myTurn) {
 	let chain = Promise.resolve()
 	const useServerTts = serverOnline && config.tts.provider !== "browser" && config.tts.ready
 	const isDid = Boolean(config.avatarMode === "did" && didModule)
-	const isSimli = Boolean(config.avatarMode === "simli" && simliModule && simliModule.isSimliReady())
+	const isSimli = Boolean(config.avatarMode === "simli" && simliModule)
 
 	const push = (sentence) => {
 		const text = cleanForSpeech(sentence)
@@ -524,14 +524,20 @@ function createSpeechQueue(myTurn) {
 					if (item instanceof Error) throw item
 					if (turnId !== myTurn) return
 					if (isSimli) {
-						await Promise.all([
-							speaker.enqueue(item),
-							simliModule.speakSimli(item.blob).catch((err) => console.warn("[simli] speak error:", err.message)),
-						])
+						try {
+							// suara diputar oleh Simli (sinkron dengan bibir), bukan lokal
+							await simliModule.speakSimli(item, { duration: item.duration })
+							renderStatus()
+						} catch (simliErr) {
+							console.warn("[simli] gagal bicara, fallback ke audio lokal:", simliErr.message)
+							addMessage("err", "Simli (" + simliErr.message + ") -> memutar suara lewat avatar foto.")
+							showAvatarVideo(false)
+							await speaker.enqueue(item)
+						}
 					} else if (isDid) {
 						try {
 							const state = didModule.getDidState()
-							if (state.fluent && state.connected) showDidVideo(true)
+							if (state.fluent && state.connected) showAvatarVideo(true)
 							const result = await didModule.speakDid(item.blob, {
 								text,
 								duration: item.duration,
@@ -543,7 +549,7 @@ function createSpeechQueue(myTurn) {
 						} catch (didErr) {
 							console.warn("[did] gagal bicara, fallback ke audio:", didErr.message)
 							addMessage("err", "D-ID (" + didErr.message + ") -> memutar suara lewat avatar foto.")
-							showDidVideo(false)
+							showAvatarVideo(false)
 							await speaker.enqueue(item)
 						}
 					} else {
@@ -570,6 +576,7 @@ async function ask(userText) {
 	turnId += 1
 	const myTurn = turnId
 	audioContext()
+	if (simliModule) simliModule.resumeSimliAudio()
 	speaker.stop()
 	stopBrowserTts()
 
@@ -673,6 +680,7 @@ function stopListeningUi() {
 async function startListening(auto) {
 	if (busy || calibrating) return
 	audioContext()
+	if (simliModule) simliModule.resumeSimliAudio()
 	speaker.stop()
 	stopBrowserTts()
 	setState("listening")
@@ -799,6 +807,7 @@ el.stopBtn.addEventListener("click", () => {
 	stopBrowserTts()
 	stopListening()
 	if (didModule) didModule.muteDid(true)
+	if (simliModule) simliModule.clearSimli()
 	showCaption("")
 	busy = false
 	setState("idle")
@@ -890,13 +899,14 @@ window.addEventListener("keyup", (event) => {
 	if (event.code === "Space" && !handsFree) stopListening()
 })
 
-/* -------------------------------- D-ID -------------------------------- */
-/** Tampilkan video D-ID (true) atau avatar foto lokal (false). */
-function showDidVideo(show) {
+/* ------------------------ avatar video streaming (Simli / D-ID) ------------------------ */
+/** Tampilkan video avatar streaming (true) atau avatar foto lokal (false). */
+function showAvatarVideo(show) {
 	if (show) {
 		el.stageEmpty.hidden = true
 		el.video.hidden = false
 		el.canvas.hidden = true
+		puppet.stop()
 	} else {
 		el.video.hidden = true
 		el.canvas.hidden = false
@@ -904,6 +914,42 @@ function showDidVideo(show) {
 	}
 	renderStatus()
 }
+
+function connectSimli() {
+	if (!simliModule) return Promise.resolve(false)
+	return simliModule
+		.startSimli({
+			videoEl: el.video,
+			onTrack: () => {
+				showAvatarVideo(true)
+				const preset = config.simli && config.simli.preset
+				addMessage(
+					"sys",
+					"Avatar video Simli aktif" +
+						(preset ? " (memakai wajah contoh Simli; buat wajah dari foto Anda: npm run simli-face -- foto.jpg)." : "."),
+				)
+			},
+			onDisconnected: (reason) => {
+				showAvatarVideo(false)
+				addMessage("sys", "Sesi Simli berakhir (" + reason + "). Tersambung lagi otomatis saat Anda bertanya.")
+			},
+			onError: (error) => {
+				console.warn("Simli issue:", error)
+				showAvatarVideo(false)
+			},
+			onStatus: (message) => {
+				console.log("[Simli]", message)
+				renderStatus()
+			},
+		})
+		.catch((error) => {
+			addMessage("err", "Simli: " + error.message + " Sementara memakai avatar foto.")
+			showAvatarVideo(false)
+			return false
+		})
+}
+
+/* -------------------------------- D-ID -------------------------------- */
 
 function connectDid() {
 	if (!didModule) return Promise.resolve(false)
@@ -914,13 +960,13 @@ function connectDid() {
 			onTrack: (_stream, state) => {
 				// fluent: video D-ID selalu tampil (gerak diam alami dari D-ID).
 				// tidak fluent: video hanya saat bicara, sisanya avatar foto lokal yang bernapas & berkedip.
-				if (state.fluent) showDidVideo(true)
+				if (state.fluent) showAvatarVideo(true)
 				addMessage("sys", "Avatar video D-ID aktif (" + state.mode + (state.fluent ? ", fluent" : ", video saat bicara") + ").")
 				renderStatus()
 			},
 			onTalkState: (talking, state) => {
 				if (state.fluent) return
-				showDidVideo(talking)
+				showAvatarVideo(talking)
 			},
 			onStatus: (message) => {
 				console.log("[D-ID]", message)
@@ -928,18 +974,27 @@ function connectDid() {
 			},
 			onError: (err) => {
 				console.warn("D-ID streaming issue:", err)
-				showDidVideo(false)
+				showAvatarVideo(false)
 			},
 		})
 		.catch((error) => {
 			console.warn("D-ID info:", error.message)
 			addMessage("err", "D-ID: " + error.message + " Sementara memakai avatar foto.")
-			showDidVideo(false)
+			showAvatarVideo(false)
 			return false
 		})
 }
 
 function avatarStatusLabel() {
+	if (config.avatarMode === "simli") {
+		const s = simliModule ? simliModule.getSimliState() : null
+		if (!s || !s.connected) return "Simli belum tersambung (cadangan: avatar foto)"
+		return (
+			"Simli tersambung" +
+			(config.simli && config.simli.preset ? " · wajah contoh" : "") +
+			(s.sessionSeconds ? " · sesi " + s.sessionSeconds + " s" : "")
+		)
+	}
 	if (config.avatarMode === "did") {
 		const s = didModule ? didModule.getDidState() : null
 		if (!s || !s.connected) return "D-ID belum tersambung (cadangan: avatar foto)"
@@ -978,29 +1033,9 @@ async function init() {
 	if (config.avatarMode === "simli" && serverOnline) {
 		try {
 			simliModule = await import("./simli.js")
-			await simliModule.startSimli({
-				videoEl: el.video,
-				onTrack: () => {
-					el.stageEmpty.hidden = true
-					el.canvas.hidden = true
-					el.video.hidden = false
-					puppet.stop()
-					addMessage("sys", "Avatar video AI real-time Simli aktif!")
-				},
-				onError: (err) => {
-					console.warn("Simli issue:", err)
-					el.video.hidden = true
-					el.canvas.hidden = false
-					puppet.start()
-				},
-				onStatus: (msg) => console.log("[Simli]", msg),
-			})
+			connectSimli()
 		} catch (error) {
-			console.error("Simli startup error:", error)
-			addMessage("err", "Simli gagal (" + error.message + "). Memakai avatar foto.")
-			el.canvas.hidden = false
-			el.video.hidden = true
-			puppet.start()
+			console.error("Simli import error:", error)
 		}
 	} else if (config.avatarMode === "did" && serverOnline) {
 		try {
