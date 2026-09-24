@@ -452,3 +452,102 @@ export async function simliSessionToken() {
 		maxIdleTime: body.maxIdleTime,
 	}
 }
+
+/* --------------------------------- Anam --------------------------------- */
+
+const ANAM_API = "https://api.anam.ai"
+
+function anamCfg() {
+	const { avatar } = getConfig()
+	const cfg = avatar.anam || {}
+	if (!cfg.apiKey) throw new Error("ANAM_API_KEY belum diisi di .env (daftar gratis di lab.anam.ai -> Settings -> API Keys)")
+	return cfg
+}
+
+async function anamRequest(method, apiPath, body) {
+	const cfg = anamCfg()
+	const headers = { authorization: `Bearer ${cfg.apiKey}`, accept: "application/json" }
+	let payload
+	if (body instanceof FormData) payload = body
+	else if (body !== undefined) {
+		headers["content-type"] = "application/json"
+		payload = JSON.stringify(body)
+	}
+	const response = await fetch(ANAM_API + apiPath, { method, headers, body: payload })
+	const text = await response.text().catch(() => "")
+	let data = null
+	if (text) {
+		try {
+			data = JSON.parse(text)
+		} catch {
+			data = { raw: text }
+		}
+	}
+	if (!response.ok) {
+		const hint = response.status === 401 || response.status === 403 ? " (API key salah/kedaluwarsa?)" : response.status === 402 || response.status === 429 ? " (kuota menit/sesi habis?)" : ""
+		const error = new Error(`Anam ${method} ${apiPath} -> ${response.status}${hint}: ${text.slice(0, 300)}`)
+		error.status = response.status
+		throw error
+	}
+	return data
+}
+
+/**
+ * Session token Anam untuk browser, mode audio passthrough (suara TTS kita sendiri).
+ * personaConfig hanya butuh avatar: LLM & TTS Anam tidak dipakai.
+ */
+export async function anamSessionToken() {
+	const cfg = anamCfg()
+	const { persona } = getConfig()
+	const avatarId = cfg.avatarId
+	if (!avatarId) throw new Error("ANAM_AVATAR_ID belum diisi")
+	const personaConfig = {
+		name: (persona.name || "Avatar").slice(0, 60),
+		avatarId,
+		avatarModel: cfg.avatarModel || "cara-4",
+		enableAudioPassthrough: true,
+	}
+	if (Number(cfg.maxSession) > 0) personaConfig.maxSessionLengthSeconds = Math.round(Number(cfg.maxSession))
+	const data = await anamRequest("POST", "/v1/auth/session-token", { personaConfig })
+	if (!data || !data.sessionToken) throw new Error("Anam tidak mengembalikan sessionToken: " + JSON.stringify(data).slice(0, 200))
+	return {
+		sessionToken: data.sessionToken,
+		avatarId,
+		avatarModel: personaConfig.avatarModel,
+		preset: Boolean(cfg.preset),
+		maxIdle: Math.max(15, Math.min(600, Number(cfg.maxIdle) || 90)),
+	}
+}
+
+/** Daftar avatar (stok + kustom) di akun Anam. */
+export async function anamListAvatars() {
+	const data = await anamRequest("GET", "/v1/avatars?perPage=100")
+	const list = Array.isArray(data) ? data : data && (data.data || data.avatars || data.items) || []
+	return list.map((a) => ({
+		id: a.id,
+		name: a.displayName || a.name || "",
+		variant: a.variantName || "",
+		imageUrl: a.imageUrl || "",
+		status: a.status || a.generationStatus || "",
+		custom: Boolean(a.isOneShot || a.oneShot || a.isCustom),
+	}))
+}
+
+/**
+ * Buat avatar kustom (one-shot) dari foto: file lokal (multipart imageFile) atau URL publik.
+ * Syarat: JPEG/PNG/WebP <= 4,5 MB, disarankan persegi >= 1152x1152, wajah fokus.
+ */
+export async function anamCreateAvatar({ displayName, imageUrl, imageBuffer, mime, fileName }) {
+	const name = String(displayName || "Avatar Saya").trim().slice(0, 50).padEnd(3, "_")
+	const cfg = anamCfg()
+	if (imageBuffer) {
+		if (imageBuffer.length > 4.5 * 1024 * 1024) throw new Error("Foto > 4,5 MB. Perkecil dulu (misal 1152x1152, kualitas 85).")
+		const form = new FormData()
+		form.append("displayName", name)
+		form.append("avatarModel", cfg.avatarModel || "cara-4")
+		form.append("imageFile", new Blob([imageBuffer], { type: mime || "image/jpeg" }), fileName || "avatar.jpg")
+		return anamRequest("POST", "/v1/avatars", form)
+	}
+	if (!imageUrl || !/^https?:\/\//i.test(imageUrl)) throw new Error("Butuh file foto lokal atau URL publik (https://...)")
+	return anamRequest("POST", "/v1/avatars", { displayName: name, imageUrl, avatarModel: cfg.avatarModel || "cara-4" })
+}

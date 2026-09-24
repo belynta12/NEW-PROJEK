@@ -238,6 +238,8 @@ const ROUTES = [
 		"/api/avatar/simli/token",
 		async (req, res) => sendJson(res, 200, await avatarVideo.simliSessionToken()),
 	],
+	["POST", "/api/avatar/anam/token", async (req, res) => sendJson(res, 200, await avatarVideo.anamSessionToken())],
+	["GET", "/api/avatar/anam/avatars", async (req, res) => sendJson(res, 200, { avatars: await avatarVideo.anamListAvatars() })],
 	[
 		"POST",
 		"/api/avatar/heygen/token",

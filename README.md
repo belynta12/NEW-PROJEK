@@ -149,6 +149,39 @@ Kalau ingin video AI generatif penuh (rambut/kain ikut bergerak), ada mode berba
 | `did` | `AVATAR_MODE=did`, `DID_API_KEY` | Streaming WebRTC dari satu foto lewat *Agents Streams* (fluent idle) dengan cadangan API lama; foto lokal diunggah otomatis, `DID_SOURCE_URL` opsional |
 | `heygen` | - | Belum tersedia di versi web ini (butuh SDK HeyGen); server sudah menyediakan endpoint token |
 
+### Mode Anam: cara coba (10 menit)
+
+Anam menghasilkan avatar yang sangat natural (wajah + tubuh atas). Di sini dipakai mode
+**audio passthrough**: suara tetap dari Fish Audio/ElevenLabs Anda, Anam hanya merender avatar
+yang bibirnya sinkron dan memutar suaranya.
+
+1. Daftar di **lab.anam.ai** (gratis: 30 menit/bulan, watermark, percakapan maks 3 menit;
+   Starter $12/bln = 50 menit + $0,16/menit). Buka **Settings -> API Keys**, salin key.
+2. Isi `.env`:
+
+```env
+AVATAR_MODE=anam
+ANAM_API_KEY=xxxxxxxx
+ANAM_AVATAR_ID=            # kosong = avatar contoh "Cara" untuk tes cepat
+TTS_PROVIDER=fishaudio     # suara Anda tetap dari Fish Audio
+```
+
+3. `npm start` (Windows: `start.bat`), buka http://localhost:8787, tanya sesuatu. Video Anam
+   menggantikan foto; suara Fish Audio diputar oleh Anam sinkron dengan bibir.
+4. Avatar dari foto Anda (dua cara):
+   - Terminal: `npm run anam-avatars -- --create "Nofal" foto-saya.jpg` (foto lokal langsung
+     diunggah; JPEG/PNG/WebP maks 4,5 MB, disarankan persegi minimal 1152x1152, wajah fokus,
+     tangan tidak terlihat, ruang kosong di sekitar kepala & bahu). Skrip mencetak ID-nya.
+   - Dashboard: **lab.anam.ai -> Build -> Avatar -> Add**, unggah foto, tunggu jadi, salin ID.
+
+   Isi ID ke `ANAM_AVATAR_ID`, restart. Daftar semua avatar beserta ID: `npm run anam-avatars`.
+   Paket gratis punya jatah slot avatar kustom terbatas (1 avatar).
+
+Catatan biaya: Anam menagih per detik sesi tersambung (termasuk saat diam). Sesi ditutup
+otomatis setelah idle `ANAM_MAX_IDLE` detik (default 90) dan tersambung lagi (~1-2 detik) saat
+Anda bertanya. Paket gratis memutus percakapan tiap 3 menit - aplikasi menyambung ulang
+otomatis. Gagal apa pun -> avatar foto lokal + suara lokal mengambil alih.
+
 ### Mode Simli: cara coba (10 menit)
 
 1. Daftar di **app.simli.com** (gratis: 50 menit/bulan + kredit $10), buka menu API key, salin.
@@ -208,7 +241,7 @@ langsung mengambil alih.
 | **Simli** | Gratis 50 mnt/bln (+$10 kredit); Hobby $10 = 1.000 mnt | ~$0,01 | Ya (1 foto) | Kepala & bahu saja | Sudah terintegrasi (`simli`). Lipsync bagus, latensi <300 ms |
 | **bitHuman** | Gratis 99 kredit/bln; Creator $20 = 1.800 kredit | ~$0,02-0,04 (2-4 kredit/mnt) | Ya (foto atau video) | Ya (tubuh atas, idle penuh) | Bisa render di perangkat/browser (setengah harga). SDK berbasis LiveKit |
 | **LemonSlice** | Starter $8 = 41 mnt; Scale $240 = 1.463 mnt | ~$0,16-0,19 (enterprise s/d $0,039) | Ya (1 foto, avatar tak terbatas) | Ya (ekspresi + gestur tubuh) | API di semua paket, BYO LLM/suara, panggilan 30 menit |
-| **Anam** | Gratis 30 mnt (watermark); Starter $12 = 50 mnt | $0,11-0,16 | Ya (1 foto) | Tubuh atas, sangat natural | Starter dibatasi 5 menit/percakapan |
+| **Anam** | Gratis 30 mnt (watermark); Starter $12 = 50 mnt | $0,11-0,16 | Ya (1 foto) | Tubuh atas, sangat natural | **Sudah terintegrasi** (`anam`, suara tetap Fish Audio). Free: sesi maks 3 menit, Starter 5 |
 | **HeyGen LiveAvatar** | Gratis 10 kredit; Starter $19 = 150 kredit; avatar kustom butuh $99 | ~$0,10-0,13 (Lite, audio sendiri) | Ya (1 foto atau video 2 menit) | Ya (dari video: gestur penuh) | 1080p, concurrency tak terbatas; SDK belum dibundel di repo ini |
 | **Akool** | Pro Max $41/bln = 1.200 kredit | ~$0,17-0,25 (6-7 kredit/mnt) | Perlu video untuk avatar streaming | Ya (tubuh penuh) | Berbasis Agora RTC |
 | **Tavus** | Gratis 25 mnt; Starter $59 = 100-175 mnt | $0,32-0,37 | Perlu video 2 menit | Wajah + tubuh atas, paling realistis | Paling mahal setelah D-ID |

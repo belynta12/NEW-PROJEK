@@ -13,9 +13,11 @@
     "clone-voice": "node scripts/clone-voice.js",
     "check": "node scripts/check-providers.js",
     "simli-face": "node scripts/simli-face.js",
-    "doctor": "node scripts/doctor.js"
+    "doctor": "node scripts/doctor.js",
+    "anam-avatars": "node scripts/anam-avatars.js"
   },
   "dependencies": {
+    "@anam-ai/js-sdk": "^4.27.0",
     "msedge-tts": "^2.0.7",
     "simli-client": "^3.0.2"
   },

@@ -12,7 +12,7 @@
  */
 
 import { SimliClient } from "./simli-bundle.js"
-import { audioContext } from "./audio.js"
+import { toPcm16k } from "./pcm.js"
 
 let client = null
 let videoEl = null
@@ -201,62 +201,6 @@ async function teardown(notify) {
 		}
 	}
 	if (notify) callbacks.onDisconnected?.("dihentikan")
-}
-
-/* ----------------------------- audio -> PCM ----------------------------- */
-
-function floatToPcm16(float32) {
-	const out = new Int16Array(float32.length)
-	for (let i = 0; i < float32.length; i++) {
-		const s = Math.max(-1, Math.min(1, float32[i]))
-		out[i] = s < 0 ? s * 0x8000 : s * 0x7fff
-	}
-	return new Uint8Array(out.buffer)
-}
-
-/** AudioBuffer (rate apa pun) -> PCM16 mono 16 kHz. */
-async function audioBufferToPcm16k(buffer) {
-	const targetRate = 16000
-	const frames = Math.max(1, Math.ceil(buffer.duration * targetRate))
-	if (typeof OfflineAudioContext !== "undefined") {
-		try {
-			const offline = new OfflineAudioContext(1, frames, targetRate)
-			const source = offline.createBufferSource()
-			source.buffer = buffer
-			source.connect(offline.destination)
-			source.start(0)
-			const rendered = await offline.startRendering()
-			return floatToPcm16(rendered.getChannelData(0))
-		} catch (error) {
-			console.warn("[simli] OfflineAudioContext gagal, pakai resampling linear:", error?.message || error)
-		}
-	}
-	// cadangan: mono + interpolasi linear
-	const ch = buffer.numberOfChannels
-	const mono = new Float32Array(buffer.length)
-	for (let c = 0; c < ch; c++) {
-		const d = buffer.getChannelData(c)
-		for (let i = 0; i < d.length; i++) mono[i] += d[i] / ch
-	}
-	const ratio = buffer.sampleRate / targetRate
-	const out = new Float32Array(frames)
-	for (let i = 0; i < frames; i++) {
-		const pos = i * ratio
-		const i0 = Math.floor(pos)
-		const i1 = Math.min(mono.length - 1, i0 + 1)
-		const t = pos - i0
-		out[i] = (mono[i0] || 0) * (1 - t) + (mono[i1] || 0) * t
-	}
-	return floatToPcm16(out)
-}
-
-async function toPcm16k(source) {
-	if (source && source.buffer && typeof source.buffer.getChannelData === "function") return audioBufferToPcm16k(source.buffer)
-	const blob = source instanceof Blob ? source : source && source.blob
-	if (!blob) throw new Error("Sumber audio tidak dikenal")
-	const arrayBuffer = await blob.arrayBuffer()
-	const decoded = await audioContext().decodeAudioData(arrayBuffer)
-	return audioBufferToPcm16k(decoded)
 }
 
 /* ------------------------------- bicara -------------------------------- */

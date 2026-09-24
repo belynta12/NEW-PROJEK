@@ -74,6 +74,8 @@ const TTS_PRESETS = {
 
 // Wajah contoh Simli ("Mark") bila SIMLI_FACE_ID kosong. Buat wajah sendiri: npm run simli-face -- foto.jpg
 const SIMLI_PRESET_FACE = "804c347a-26c9-4dcf-bb49-13df4bed61e8"
+// Avatar contoh Anam ("Cara") bila ANAM_AVATAR_ID kosong. Avatar dari foto Anda: lab.anam.ai -> Build -> Avatar
+const ANAM_PRESET_AVATAR = "30fa96d0-26c4-4e55-94a0-517025942e18"
 
 const num = (value, fallback) => {
 	const parsed = Number(value)
@@ -147,6 +149,16 @@ function build() {
 				// idle pendek = hemat kuota; sesi tersambung lagi otomatis saat pengguna bertanya
 				maxSession: num(process.env.SIMLI_MAX_SESSION, 900),
 				maxIdle: num(process.env.SIMLI_MAX_IDLE, 90),
+			},
+			anam: {
+				apiKey: str(process.env.ANAM_API_KEY),
+				avatarId: str(process.env.ANAM_AVATAR_ID, ANAM_PRESET_AVATAR),
+				preset: !str(process.env.ANAM_AVATAR_ID),
+				avatarModel: str(process.env.ANAM_AVATAR_MODEL, "cara-4"),
+				// Anam menagih per detik sesi (termasuk diam) -> tutup sesi setelah idle sekian detik
+				maxIdle: num(process.env.ANAM_MAX_IDLE, 90),
+				// batas panjang sesi (detik); 0 = ikut batas paket (Free 3 mnt, Starter 5, Explorer 10)
+				maxSession: num(process.env.ANAM_MAX_SESSION, 0),
 			},
 			heygen: {
 				apiKey: str(process.env.HEYGEN_API_KEY),
@@ -237,6 +249,13 @@ export function publicConfig() {
 			fluent: c.avatar.did.fluent,
 			publicAudio: Boolean(c.avatar.did.publicBaseUrl),
 			hasSourceUrl: Boolean(c.avatar.did.sourceUrl),
+		},
+		anam: {
+			ready: Boolean(c.avatar.anam.apiKey),
+			avatarId: c.avatar.anam.avatarId,
+			preset: c.avatar.anam.preset,
+			avatarModel: c.avatar.anam.avatarModel,
+			maxIdle: c.avatar.anam.maxIdle,
 		},
 		simliReady: Boolean(c.avatar.simli.apiKey),
 		simli: {

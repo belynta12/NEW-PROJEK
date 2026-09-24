@@ -88,6 +88,7 @@ let recorder = null
 let browserStt = null
 let didModule = null
 let simliModule = null
+let anamModule = null
 
 /* ------------------------------- utilitas ----------------------------- */
 const STATE_LABEL = {
@@ -495,6 +496,7 @@ function createSpeechQueue(myTurn) {
 	const useServerTts = serverOnline && config.tts.provider !== "browser" && config.tts.ready
 	const isDid = Boolean(config.avatarMode === "did" && didModule)
 	const isSimli = Boolean(config.avatarMode === "simli" && simliModule)
+	const isAnam = Boolean(config.avatarMode === "anam" && anamModule)
 
 	const push = (sentence) => {
 		const text = cleanForSpeech(sentence)
@@ -523,7 +525,18 @@ function createSpeechQueue(myTurn) {
 					const item = await prefetch
 					if (item instanceof Error) throw item
 					if (turnId !== myTurn) return
-					if (isSimli) {
+					if (isAnam) {
+						try {
+							// suara Fish Audio dikirim ke Anam (audio passthrough): bibir & suara sinkron
+							await anamModule.speakAnam(item, { duration: item.duration })
+							renderStatus()
+						} catch (anamErr) {
+							console.warn("[anam] gagal bicara, fallback ke audio lokal:", anamErr.message)
+							addMessage("err", "Anam (" + anamErr.message + ") -> memutar suara lewat avatar foto.")
+							showAvatarVideo(false)
+							await speaker.enqueue(item)
+						}
+					} else if (isSimli) {
 						try {
 							// suara diputar oleh Simli (sinkron dengan bibir), bukan lokal
 							await simliModule.speakSimli(item, { duration: item.duration })
@@ -577,6 +590,7 @@ async function ask(userText) {
 	const myTurn = turnId
 	audioContext()
 	if (simliModule) simliModule.resumeSimliAudio()
+	if (anamModule) anamModule.resumeAnamAudio()
 	speaker.stop()
 	stopBrowserTts()
 
@@ -681,6 +695,7 @@ async function startListening(auto) {
 	if (busy || calibrating) return
 	audioContext()
 	if (simliModule) simliModule.resumeSimliAudio()
+	if (anamModule) anamModule.resumeAnamAudio()
 	speaker.stop()
 	stopBrowserTts()
 	setState("listening")
@@ -808,6 +823,7 @@ el.stopBtn.addEventListener("click", () => {
 	stopListening()
 	if (didModule) didModule.muteDid(true)
 	if (simliModule) simliModule.clearSimli()
+	if (anamModule) anamModule.clearAnam()
 	showCaption("")
 	busy = false
 	setState("idle")
@@ -949,6 +965,40 @@ function connectSimli() {
 		})
 }
 
+function connectAnam() {
+	if (!anamModule) return Promise.resolve(false)
+	return anamModule
+		.startAnam({
+			videoEl: el.video,
+			onTrack: () => {
+				showAvatarVideo(true)
+				const preset = config.anam && config.anam.preset
+				addMessage(
+					"sys",
+					"Avatar video Anam aktif" +
+						(preset ? " (memakai avatar contoh Anam; buat avatar dari foto Anda di lab.anam.ai lalu isi ANAM_AVATAR_ID)." : "."),
+				)
+			},
+			onDisconnected: (reason) => {
+				showAvatarVideo(false)
+				addMessage("sys", "Sesi Anam berakhir (" + reason + "). Tersambung lagi otomatis saat Anda bertanya.")
+			},
+			onError: (error) => {
+				console.warn("Anam issue:", error)
+				showAvatarVideo(false)
+			},
+			onStatus: (message) => {
+				console.log("[Anam]", message)
+				renderStatus()
+			},
+		})
+		.catch((error) => {
+			addMessage("err", "Anam: " + error.message + " Sementara memakai avatar foto.")
+			showAvatarVideo(false)
+			return false
+		})
+}
+
 /* -------------------------------- D-ID -------------------------------- */
 
 function connectDid() {
@@ -986,6 +1036,11 @@ function connectDid() {
 }
 
 function avatarStatusLabel() {
+	if (config.avatarMode === "anam") {
+		const s = anamModule ? anamModule.getAnamState() : null
+		if (!s || !s.connected) return "Anam belum tersambung (cadangan: avatar foto)"
+		return "Anam tersambung" + (s.preset ? " · avatar contoh" : "") + (s.sessionSeconds ? " · sesi " + s.sessionSeconds + " s" : "")
+	}
 	if (config.avatarMode === "simli") {
 		const s = simliModule ? simliModule.getSimliState() : null
 		if (!s || !s.connected) return "Simli belum tersambung (cadangan: avatar foto)"
@@ -1036,6 +1091,14 @@ async function init() {
 			connectSimli()
 		} catch (error) {
 			console.error("Simli import error:", error)
+		}
+	} else if (config.avatarMode === "anam" && serverOnline) {
+		try {
+			anamModule = await import("./anam.js")
+			connectAnam()
+		} catch (error) {
+			console.error("Anam import error:", error)
+			addMessage("err", "Modul Anam gagal dimuat: " + error.message)
 		}
 	} else if (config.avatarMode === "did" && serverOnline) {
 		try {
